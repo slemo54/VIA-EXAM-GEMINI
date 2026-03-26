@@ -1,0 +1,5 @@
+{
+  "name": "ExamChecker AI",
+  "description": "Automated multiple-choice exam correction using Gemini Vision API. Upload scans or photos of answer sheets to get instant results.",
+  "requestFramePermissions": ["camera"]
+}
