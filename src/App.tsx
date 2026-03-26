@@ -239,7 +239,8 @@ export default function App() {
           try {
             analysis = await analyzeExamSheet(imageBase64, currentExam.num_questions);
           } catch (error) {
-            alert("AI analysis failed. Check your API key.");
+            console.error("AI analysis failed details:", error);
+            alert("AI analysis failed. Check your API key or model availability.");
             throw error;
           }
           

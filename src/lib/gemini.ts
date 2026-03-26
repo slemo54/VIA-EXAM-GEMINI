@@ -9,7 +9,7 @@ const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
 export const analyzeExamSheet = async (imageBase64: string, numQuestions: number = 100) => {
   const model = ai.models.generateContent({
-    model: "gemini-3.1-pro",
+    model: "gemini-1.5-pro",
     contents: [
       {
         parts: [
