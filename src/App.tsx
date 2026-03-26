@@ -248,7 +248,15 @@ export default function App() {
           let score = 0;
           let totalCorrect = 0;
           let totalWrong = 0;
-          const examAnswers = analysis.answers;
+          const rawAnswers = analysis.answers || {};
+          const examAnswers: Record<string, string> = {};
+          Object.keys(rawAnswers).forEach(k => {
+            if (rawAnswers[k]) {
+              examAnswers[k] = String(rawAnswers[k]).toUpperCase().trim();
+            } else {
+              examAnswers[k] = "";
+            }
+          });
           Object.keys(answerKey).forEach(q => {
             if (examAnswers[q] === answerKey[q]) {
               score += 1;
@@ -429,12 +437,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
       {/* Header */}
-      <header className="border-b border-[#141414] p-6 flex justify-between items-center">
+      <header className="border-b border-[#141414] p-4 md:p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tighter uppercase italic font-serif">ExamChecker AI</h1>
           <p className="text-xs opacity-50 uppercase tracking-widest mt-1">Vision-Powered OMR Engine</p>
         </div>
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-2 md:gap-4 w-full md:w-auto">
           <div className={cn(
             "flex items-center gap-2 px-3 py-1 border text-[10px] font-mono uppercase tracking-widest",
             dbStatus === "supabase" ? "border-green-600/50 text-green-600" : "border-amber-600/50 text-amber-600"
@@ -462,7 +470,7 @@ export default function App() {
 
       <div className="flex flex-col lg:flex-row min-h-[calc(100vh-100px)]">
         {/* Sidebar Navigation */}
-        <nav className="w-full lg:w-20 border-b lg:border-b-0 lg:border-r border-[#141414] flex lg:flex-col items-center py-4 lg:py-8 gap-8 px-4 lg:px-0">
+        <nav className="w-full lg:w-20 border-b lg:border-b-0 lg:border-r border-[#141414] flex lg:flex-col items-center justify-around lg:justify-start py-2 lg:py-8 gap-2 lg:gap-8 px-4 lg:px-0 overflow-x-auto">
           <button 
             onClick={() => setActiveTab("correct")}
             className={cn("p-3 transition-all", activeTab === "correct" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
@@ -487,7 +495,7 @@ export default function App() {
         </nav>
 
         {/* Main Content Area */}
-        <main className="flex-1 p-6 lg:p-12 overflow-y-auto">
+        <main className="flex-1 p-4 md:p-6 lg:p-12 overflow-y-auto">
           <AnimatePresence mode="wait">
             {activeTab === "correct" && (
               <motion.div 
@@ -497,9 +505,9 @@ export default function App() {
                 exit={{ opacity: 0, y: -20 }}
                 className="max-w-4xl mx-auto"
               >
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12">
                   <div className="space-y-8">
-                    <h2 className="text-4xl font-serif italic">Upload Sheets</h2>
+                    <h2 className="text-3xl md:text-4xl font-serif italic">Upload Sheets</h2>
                     <p className="opacity-70 leading-relaxed">
                       Drop your PDF scans or photos here. Gemini Vision will automatically detect the bubbles, 
                       read the candidate number, and compare with the answer key.
@@ -558,7 +566,7 @@ export default function App() {
                       </div>
                     )}
 
-                    <div className="flex gap-4">
+                    <div className="flex flex-wrap gap-2 md:gap-4">
                       <button 
                         className="flex-1 border border-[#141414] py-3 uppercase text-xs font-mono tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0] transition-all flex items-center justify-center gap-2"
                         onClick={() => setShowCamera(true)}
@@ -569,7 +577,7 @@ export default function App() {
                   </div>
 
                   <div className="space-y-8">
-                    <h2 className="text-4xl font-serif italic">Live Result</h2>
+                    <h2 className="text-3xl md:text-4xl font-serif italic">Live Result</h2>
                     {currentResult ? (
                       <motion.div 
                         initial={{ scale: 0.95, opacity: 0 }}
@@ -625,7 +633,7 @@ export default function App() {
                 className="max-w-6xl mx-auto"
               >
                 <div className="flex justify-between items-end mb-12">
-                  <h2 className="text-5xl font-serif italic">History</h2>
+                  <h2 className="text-4xl md:text-5xl font-serif italic">History</h2>
                   <button 
                     onClick={exportCSV}
                     className="text-xs font-mono uppercase border-b border-[#141414] pb-1 hover:opacity-50"
@@ -658,8 +666,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="border border-[#141414]">
-                  <div className="grid grid-cols-5 bg-[#141414] text-[#E4E3E0] p-4 text-[10px] uppercase tracking-widest font-mono">
+                <div className="border border-[#141414] overflow-x-auto w-full">
+                  <div className="grid grid-cols-[minmax(80px,1fr)_minmax(100px,1fr)_minmax(80px,1fr)_minmax(100px,1fr)_minmax(80px,1fr)] min-w-[600px] bg-[#141414] text-[#E4E3E0] p-4 text-[10px] uppercase tracking-widest font-mono">
                     <span>Date</span>
                     <span>Candidate</span>
                     <span>Score</span>
@@ -671,14 +679,14 @@ export default function App() {
                       <div className="p-12 text-center opacity-50 uppercase text-xs tracking-widest">No results found for this exam</div>
                     ) : (
                       results.map(res => (
-                        <div key={res.id} className="grid grid-cols-5 p-4 items-center hover:bg-[#141414]/5 transition-colors">
+                        <div key={res.id} className="grid grid-cols-[minmax(80px,1fr)_minmax(100px,1fr)_minmax(80px,1fr)_minmax(100px,1fr)_minmax(80px,1fr)] min-w-[600px] p-4 items-center hover:bg-[#141414]/5 transition-colors">
                           <span className="text-xs font-mono">{new Date(res.created_at).toLocaleDateString()}</span>
                           <span className="font-bold font-mono">#{res.candidate_number}</span>
                           <span className="text-xl font-serif italic">{res.score}/{res.max_score}</span>
                           <span className="text-xs font-mono">{(res.confidence * 100).toFixed(0)}%</span>
                           <div className="flex justify-end gap-4">
                             <button className="hover:opacity-50" onClick={() => {
-                              setCurrentResult({ ...res, answers: JSON.parse(res.answers) });
+                              setCurrentResult({ ...res, answers: typeof res.answers === 'string' ? JSON.parse(res.answers) : res.answers });
                               setActiveTab("detail");
                             }}><Eye size={16} /></button>
                             <button className="hover:text-red-600" onClick={() => deleteResult(res.id)}><Trash2 size={16} /></button>
@@ -701,10 +709,10 @@ export default function App() {
               >
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-8 mb-12">
                   <div>
-                    <h2 className="text-5xl font-serif italic">Exam Settings</h2>
+                    <h2 className="text-4xl md:text-5xl font-serif italic">Exam Settings</h2>
                     <p className="text-sm opacity-50 mt-2 uppercase tracking-widest">Configure session parameters and answer key</p>
                   </div>
-                  <div className="flex gap-4 w-full md:w-auto">
+                  <div className="flex flex-wrap gap-2 md:gap-4 w-full lg:w-auto">
                     <input 
                       type="text" 
                       placeholder="New Exam Name"
@@ -741,7 +749,7 @@ export default function App() {
                           placeholder="Add notes about this session..."
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <label className="text-[10px] uppercase font-mono opacity-50">Questions (10-200)</label>
                           <input 
@@ -810,7 +818,7 @@ export default function App() {
 
                 <div className="border-t border-[#141414] pt-12">
                   <h3 className="text-2xl font-serif italic mb-8">Manual Answer Key</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-10 gap-4">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-10 gap-2 md:gap-4">
                     {Object.keys(answerKey).sort((a, b) => parseInt(a) - parseInt(b)).map(q => (
                       <div key={q} className="border border-[#141414] p-3 space-y-2 group hover:bg-[#141414] hover:text-[#E4E3E0] transition-all">
                         <span className="text-[10px] font-mono opacity-50 block">{q}</span>
@@ -841,7 +849,7 @@ export default function App() {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-12">
                   <div>
                     <div className="flex items-center gap-4">
-                      <h2 className="text-5xl font-serif italic">Result Detail</h2>
+                      <h2 className="text-4xl md:text-5xl font-serif italic">Result Detail</h2>
                       <span className={cn(
                         "px-3 py-1 text-[10px] font-mono uppercase tracking-widest border",
                         currentResult.is_passing ? "border-green-600 text-green-600" : "border-red-600 text-red-600"

@@ -137,7 +137,7 @@ export async function saveResult(result: any) {
         candidate_number: resultData.candidate_number,
         score: resultData.score,
         created_at: resultData.created_at,
-        answers_json: answers,
+        answers_json: typeof answers === "string" ? JSON.parse(answers) : answers,
         pass_fail: is_passing,
         total_answered: totalAnswered,
         // These would ideally be passed from the calculation logic in App.tsx

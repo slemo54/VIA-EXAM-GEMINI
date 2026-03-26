@@ -27,7 +27,12 @@ export const pdfToImages = async (file: File): Promise<string[]> => {
       if (!context) continue;
 
       canvas.height = viewport.height;
+      canvas.height = viewport.height;
       canvas.width = viewport.width;
+
+      // Fill with white background to prevent transparent black-on-black issues
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
 
       await page.render({ canvasContext: context, viewport }).promise;
       images.push(canvas.toDataURL('image/png'));
