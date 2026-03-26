@@ -9,7 +9,7 @@ const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
 export const analyzeExamSheet = async (imageBase64: string, numQuestions: number = 100) => {
   const model = ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-3.1-pro",
     contents: [
       {
         parts: [
@@ -18,6 +18,12 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
             Analyze the provided image of a multiple-choice answer sheet.
             The sheet has ${numQuestions} questions, each with options A, B, C, D, E.
             
+            Extract carefully:
+            - Scan the image thoroughly to find the bubbling area.
+            - The bubbles are usually marked with a dark fill (pencil or pen).
+            - Empty circles should NOT be considered as answers.
+            - Ensure you map the row number correctly to the question number.
+
             Extract:
             1. Candidate Number (if visible, usually 6 digits).
             2. For each question (1 to ${numQuestions}), identify the marked option (A, B, C, D, or E). If no option is marked or it's ambiguous, return null.
