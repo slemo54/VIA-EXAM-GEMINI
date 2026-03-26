@@ -132,7 +132,11 @@ export async function saveResult(result: any) {
     const { error } = await supabase
       .from('results')
       .upsert({
-        ...resultData,
+        id: resultData.id,
+        exam_id: resultData.exam_id,
+        candidate_number: resultData.candidate_number,
+        score: resultData.score,
+        created_at: resultData.created_at,
         answers_json: answers,
         pass_fail: is_passing,
         total_answered: totalAnswered,

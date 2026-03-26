@@ -3,10 +3,19 @@ import * as pdfjsLib from 'pdfjs-dist';
 // Set worker path
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
+// Provide standard fonts and mCMap url to avoid 404s
+const CMAP_URL = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`;
+const STANDARD_FONT_DATA_URL = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`;
+
 export const pdfToImages = async (file: File): Promise<string[]> => {
   try {
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await pdfjsLib.getDocument({
+      data: arrayBuffer,
+      cMapUrl: CMAP_URL,
+      cMapPacked: true,
+      standardFontDataUrl: STANDARD_FONT_DATA_URL
+    }).promise;
     const images: string[] = [];
 
     for (let i = 1; i <= pdf.numPages; i++) {
