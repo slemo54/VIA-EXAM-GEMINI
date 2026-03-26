@@ -54,6 +54,9 @@ export default function App() {
   const [selectedExamId, setSelectedExamId] = useState<string>("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
+  const [uploadProgressPercent, setUploadProgressPercent] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [results, setResults] = useState<Result[]>([]);
   const [currentResult, setCurrentResult] = useState<any>(null);
   const [answerKey, setAnswerKey] = useState<Record<string, string>>({});
@@ -180,12 +183,25 @@ export default function App() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | any) => {
     const files = e.target.files;
-    if (!files || files.length === 0 || !selectedExamId) return;
+    if (!files || files.length === 0) return;
+
+    if (!selectedExamId) {
+      alert("Please select an exam first");
+      return;
+    }
+
+    for (let i = 0; i < files.length; i++) {
+      if (files[i].size > 20 * 1024 * 1024) {
+        alert("File too large. Maximum size is 20MB.");
+        return;
+      }
+    }
 
     setIsUploading(true);
     setUploadProgress("Processing files...");
+    setUploadProgressPercent(0);
 
     try {
       const storedResults = localStorage.getItem("results");
@@ -198,21 +214,34 @@ export default function App() {
         const file = files[i];
         setUploadProgress(`Processing ${file.name}...`);
         
+        setUploadProgressPercent((i / files.length) * 100);
+
         let images: string[] = [];
-        if (file.type === "application/pdf") {
-          images = await pdfToImages(file);
-        } else {
-          const reader = new FileReader();
-          const imagePromise = new Promise<string>((resolve) => {
-            reader.onload = (e) => resolve(e.target?.result as string);
-          });
-          reader.readAsDataURL(file);
-          images = [await imagePromise];
+        try {
+          if (file.type === "application/pdf") {
+            images = await pdfToImages(file);
+          } else {
+            const reader = new FileReader();
+            const imagePromise = new Promise<string>((resolve) => {
+              reader.onload = (e) => resolve(e.target?.result as string);
+            });
+            reader.readAsDataURL(file);
+            images = [await imagePromise];
+          }
+        } catch (error) {
+          alert("Failed to convert PDF. Try uploading an image instead.");
+          throw error;
         }
 
         for (const imageBase64 of images) {
           setUploadProgress(`Analyzing page with AI...`);
-          const analysis = await analyzeExamSheet(imageBase64, currentExam.num_questions);
+          let analysis;
+          try {
+            analysis = await analyzeExamSheet(imageBase64, currentExam.num_questions);
+          } catch (error) {
+            alert("AI analysis failed. Check your API key.");
+            throw error;
+          }
           
           // Calculate score
           let score = 0;
@@ -253,6 +282,7 @@ export default function App() {
         }
       }
       
+      setUploadProgressPercent(100);
       fetchResults(selectedExamId);
       setUploadProgress("Done!");
     } catch (err) {
@@ -262,6 +292,7 @@ export default function App() {
       setTimeout(() => {
         setIsUploading(false);
         setUploadProgress("");
+        setUploadProgressPercent(0);
       }, 2000);
     }
   };
@@ -475,17 +506,40 @@ export default function App() {
 
                     <div className="relative group">
                       <input 
+                        ref={fileInputRef}
                         type="file" 
                         multiple 
-                        accept="image/*,application/pdf"
+                        accept="image/*,.jpg,.jpeg,.png,.webp,.gif,application/pdf"
                         onChange={handleFileUpload}
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                         disabled={isUploading || !selectedExamId}
                       />
                       <div className={cn(
-                        "border-2 border-dashed border-[#141414] p-12 flex flex-col items-center justify-center gap-4 transition-all",
-                        isUploading ? "opacity-50" : "group-hover:bg-[#141414]/5"
-                      )}>
+                        "relative border-2 p-12 flex flex-col items-center justify-center gap-4 transition-all cursor-pointer",
+                        isUploading ? "opacity-50" : "group-hover:bg-[#141414]/5",
+                        isDragging ? "border-solid border-[#141414] bg-[#141414]/5" : "border-dashed border-[#141414]"
+                      )}
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!isUploading && selectedExamId) setIsDragging(true);
+                      }}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        if (!isUploading && selectedExamId) setIsDragging(true);
+                      }}
+                      onDragLeave={(e) => {
+                        e.preventDefault();
+                        setIsDragging(false);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setIsDragging(false);
+                        if (!isUploading && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                          handleFileUpload({ target: { files: e.dataTransfer.files } });
+                        }
+                      }}
+                      >
                         {isUploading ? (
                           <Loader2 className="animate-spin" size={48} />
                         ) : (
@@ -496,6 +550,12 @@ export default function App() {
                         </span>
                       </div>
                     </div>
+
+                    {isUploading && (
+                      <div className="w-full border border-[#141414] h-1">
+                        <div className="h-1 bg-[#141414] transition-all" style={{width: `${uploadProgressPercent}%`}} />
+                      </div>
+                    )}
 
                     <div className="flex gap-4">
                       <button 
