@@ -123,10 +123,25 @@ export async function getResults(examId: string) {
 
 export async function saveResult(result: any) {
   if (supabase) {
-    const { answers, is_passing, ...resultData } = result;
+    // Destructure to separate fields that might not exist in the DB schema
+    // or need special mapping
+    const { 
+      answers, 
+      is_passing, 
+      confidence,
+      max_score,
+      total_correct,
+      total_wrong,
+      ...resultData 
+    } = result;
     
     // Calculate stats for the schema
-    const parsedAnswers = JSON.parse(answers);
+    let parsedAnswers = {};
+    try {
+      parsedAnswers = JSON.parse(answers);
+    } catch (e) {
+      console.error("Failed to parse answers JSON in saveResult:", e);
+    }
     const totalAnswered = Object.keys(parsedAnswers).length;
     
     const { error } = await supabase
@@ -136,10 +151,10 @@ export async function saveResult(result: any) {
         answers_json: answers,
         pass_fail: is_passing,
         total_answered: totalAnswered,
-        // These would ideally be passed from the calculation logic in App.tsx
-        // but for now we'll map them if they exist or default
-        total_correct: result.total_correct || 0,
-        total_wrong: result.total_wrong || 0
+        confidence: confidence,
+        max_score: max_score,
+        total_correct: total_correct || 0,
+        total_wrong: total_wrong || 0
       });
     
     if (error) throw error;

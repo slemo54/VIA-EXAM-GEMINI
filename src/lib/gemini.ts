@@ -1,41 +1,46 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
-  console.error("VITE_GEMINI_API_KEY is not set");
+  console.error("GEMINI_API_KEY is not set");
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
-export const analyzeExamSheet = async (imageBase64: string, numQuestions: number = 100) => {
-  const model = ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+export const analyzeExamSheet = async (
+  imageBase64: string, 
+  numQuestions: number = 100,
+  onProgress?: (msg: string) => void
+) => {
+  if (onProgress) onProgress("Initializing AI model...");
+  
+  const request = {
+    model: "gemini-3.1-pro-preview",
     contents: [
       {
         parts: [
           {
-            text: `You are an expert exam correction assistant. 
-            Analyze the provided image of a multiple-choice answer sheet.
-            The sheet has ${numQuestions} questions, each with options A, B, C, D, E.
+            text: `You are an expert at grading multiple-choice exam answer sheets.
             
-            Extract:
-            1. Candidate Number (if visible, usually 6 digits).
-            2. For each question (1 to ${numQuestions}), identify the marked option (A, B, C, D, or E). If no option is marked or it's ambiguous, return null.
+            TASK:
+            1. Find the "Candidate Number" (e.g., "14567ANSE") written in the top box. If it's not present on this page, return null for it.
+            2. Scan ALL the numbered questions visible on the page. 
+               - Page 1 usually contains questions 1 to 45.
+               - Page 2 usually contains questions 46 to 100.
+               - You MUST scan every single column from top to bottom.
+               - CRITICAL: DO NOT SKIP ANY QUESTIONS. If a question has a marked answer, you MUST include it in the output.
+               - Do not stop scanning until you reach the bottom of the last column on the page.
+            3. For each question, look at the 5 options (A, B, C, D, E).
+            4. If an option is scribbled, blackened, or marked with an 'X', it is the selected answer. Even if the mark is faint, it counts as an answer.
+            5. If all options for a question are empty (just thin outlines), SKIP that question. Do not include it.
+            6. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
             
-            Return ONLY a JSON object with the following structure:
-            {
-              "candidate_number": "string or null",
-              "answers": {
-                "1": "A",
-                "2": "C",
-                ...
-              },
-              "confidence": 0.95
-            }`
+            OUTPUT:
+            Return a JSON object containing the candidate number (or null) and a list of ALL detected answers.`
           },
           {
             inlineData: {
-              mimeType: "image/png",
+              mimeType: "image/jpeg",
               data: imageBase64.split(",")[1] || imageBase64
             }
           }
@@ -43,22 +48,72 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
       }
     ],
     config: {
+      systemInstruction: "You are a precise OCR engine for exam sheets. You output ONLY valid, compact JSON. You never add extra spaces, explanations, or conversational filler. You distinguish between empty circles and filled bubbles with high accuracy.",
       responseMimeType: "application/json",
+      maxOutputTokens: 8192,
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          candidate_number: { type: Type.STRING },
-          answers: {
-            type: Type.OBJECT,
-            additionalProperties: { type: Type.STRING }
+          candidate_number: { type: Type.STRING, nullable: true },
+          detected_answers: {
+            type: Type.ARRAY,
+            description: "List of questions that have a filled bubble.",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                question_number: { type: Type.NUMBER },
+                selected_option: { type: Type.STRING }
+              },
+              required: ["question_number", "selected_option"]
+            }
           },
           confidence: { type: Type.NUMBER }
         },
-        required: ["candidate_number", "answers", "confidence"]
+        required: ["candidate_number", "detected_answers", "confidence"]
       }
     }
-  });
+  };
 
-  const response = await model;
-  return JSON.parse(response.text);
+  if (onProgress) onProgress("Sending image to AI...");
+  const responseStream = await ai.models.generateContentStream(request);
+
+  let text = "";
+  for await (const chunk of responseStream) {
+    if (chunk.text) {
+      text += chunk.text;
+    }
+    if (onProgress) {
+      if (!text.includes("candidate_number")) {
+        onProgress("Detecting candidate number...");
+      } else if (text.includes("detected_answers")) {
+        const matches = text.match(/"question_number"/g);
+        const count = matches ? matches.length : 0;
+        onProgress(`Extracting answers... (${count} found so far)`);
+      }
+    }
+  }
+  
+  if (onProgress) onProgress("Finalizing analysis...");
+  
+  // Robust JSON extraction and cleaning
+  try {
+    text = text.trim();
+    // If the model returned a massive string of spaces, this will help
+    if (text.length > 50000) {
+      text = text.replace(/\s{2,}/g, ' '); 
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const jsonMatch = text.match(/\{[\s\S]*?\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      throw e;
+    }
+  } catch (e) {
+    console.error(`Gemini JSON Parse Error (Length: ${text.length}). Raw text snippet:`, text.substring(0, 200));
+    throw new Error("L'intelligenza artificiale ha restituito un formato non valido. Riprova.");
+  }
 };
