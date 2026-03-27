@@ -28,7 +28,14 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
             1. Candidate Number (if visible, usually 6 digits).
             2. For each question (1 to ${numQuestions}), identify the marked option (A, B, C, D, or E). If no option is marked or it's ambiguous, return null.
             
-            Return ONLY a JSON object with the following structure:
+            CRITICAL INSTRUCTIONS FOR READING BUBBLES:
+            - A bubble is considered "marked" if it is filled in with dark ink/pencil.
+            - A bubble with just an outline and white inside is NOT marked.
+            - If multiple bubbles are filled for a single question, return "INVALID".
+            - If no bubble is filled, return null or empty string.
+            - You MUST return an answer for every single question from 1 to ${numQuestions}. Look closely at the whole page.
+
+            Return ONLY a JSON object with the exact following structure:
             {
               "candidate_number": "string or null",
               "answers": {

@@ -269,7 +269,8 @@ export default function App() {
 
           const maxScore = currentExam.num_questions;
           const scorePercentage = (score / maxScore) * 100;
-          const isPassing = scorePercentage >= currentExam.passing_score;
+          const passThreshold = Number(currentExam.passing_score) || 60;
+          const isPassing = scorePercentage >= passThreshold;
 
           const resultId = crypto.randomUUID();
           const resultData: any = {
