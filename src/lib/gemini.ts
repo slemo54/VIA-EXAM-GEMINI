@@ -24,20 +24,21 @@ export const analyzeExamSheet = async (
             
             TASK:
             1. Find the "Candidate Number" (e.g., "14567ANSE") written in the top box. If it's not present on this page, return null for it.
-            2. Scan ALL the numbered questions visible on the page. 
+            2. Find the "Candidate ID" written in the top right corner, usually circled in red (e.g., "VR 26-06"). If it's not present, return null for it.
+            3. Scan ALL the numbered questions visible on the page. 
                - Page 1 usually contains questions 1 to 45.
                - Page 2 usually contains questions 46 to 100.
                - You MUST scan every single column from top to bottom.
                - CRITICAL: DO NOT SKIP ANY QUESTIONS. If a question has a marked answer, you MUST include it in the output.
                - Do not stop scanning until you reach the bottom of the last column on the page.
-            3. For each question, look at the 5 options (A, B, C, D, E).
-            4. If an option is scribbled, blackened, or marked with an 'X', it is the selected answer. Even if the mark is faint, it counts as an answer.
-            5. If all options for a question are empty (just thin outlines), SKIP that question. Do not include it.
-            6. If a mark is very faint, ambiguous, or if there are multiple marks and you are guessing the intended one, set \`is_unsure\` to true for that question.
-            7. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
+            4. For each question, look at the 5 options (A, B, C, D, E).
+            5. If an option is scribbled, blackened, or marked with an 'X', it is the selected answer. Even if the mark is faint, it counts as an answer.
+            6. If all options for a question are empty (just thin outlines), SKIP that question. Do not include it.
+            7. If a mark is very faint, ambiguous, or if there are multiple marks and you are guessing the intended one, set \`is_unsure\` to true for that question.
+            8. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
             
             OUTPUT:
-            Return a JSON object containing the candidate number (or null) and a list of ALL detected answers.`
+            Return a JSON object containing the candidate number, candidate ID (both or null), and a list of ALL detected answers.`
           },
           {
             inlineData: {
@@ -56,6 +57,7 @@ export const analyzeExamSheet = async (
         type: Type.OBJECT,
         properties: {
           candidate_number: { type: Type.STRING, nullable: true },
+          candidate_id: { type: Type.STRING, nullable: true },
           detected_answers: {
             type: Type.ARRAY,
             description: "List of questions that have a filled bubble.",

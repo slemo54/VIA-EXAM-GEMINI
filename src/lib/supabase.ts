@@ -111,11 +111,22 @@ export async function getResults(examId: string) {
     
     if (error) throw error;
     
-    return data.map(r => ({
-      ...r,
-      answers: r.answers_json,
-      is_passing: r.pass_fail
-    }));
+    return data.map(r => {
+      let candidate_id = undefined;
+      try {
+        const parsed = JSON.parse(r.answers_json);
+        if (parsed._candidate_id) {
+          candidate_id = parsed._candidate_id;
+        }
+      } catch (e) {}
+      
+      return {
+        ...r,
+        answers: r.answers_json,
+        is_passing: r.pass_fail,
+        candidate_id
+      };
+    });
   } else {
     return getLocal('results').filter((r: any) => r.exam_id === examId);
   }
@@ -132,23 +143,27 @@ export async function saveResult(result: any) {
       max_score,
       total_correct,
       total_wrong,
+      candidate_id,
       ...resultData 
     } = result;
     
     // Calculate stats for the schema
-    let parsedAnswers = {};
+    let parsedAnswers: any = {};
     try {
       parsedAnswers = JSON.parse(answers);
+      if (candidate_id) {
+        parsedAnswers._candidate_id = candidate_id;
+      }
     } catch (e) {
       console.error("Failed to parse answers JSON in saveResult:", e);
     }
-    const totalAnswered = Object.keys(parsedAnswers).length;
+    const totalAnswered = Object.keys(parsedAnswers).filter(k => k !== '_unsure' && k !== '_candidate_id').length;
     
     const { error } = await supabase
       .from('results')
       .upsert({
         ...resultData,
-        answers_json: answers,
+        answers_json: JSON.stringify(parsedAnswers),
         pass_fail: is_passing,
         total_answered: totalAnswered,
         confidence: confidence,

@@ -21,6 +21,7 @@ import { pdfToImages } from "./lib/pdf";
 import { analyzeExamSheet } from "./lib/gemini";
 import * as db from "./lib/supabase";
 import { Database, CloudOff } from "lucide-react";
+import { set as idbSet, get as idbGet, del as idbDel } from 'idb-keyval';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -41,6 +42,7 @@ interface Result {
   id: string;
   exam_id: string;
   candidate_number: string;
+  candidate_id?: string;
   answers: string; // JSON string
   score: number;
   max_score: number;
@@ -61,9 +63,88 @@ export default function App() {
   const [newExamName, setNewExamName] = useState("");
   const [csvPreview, setCsvPreview] = useState<Record<string, string> | null>(null);
   const [showCamera, setShowCamera] = useState(false);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [apiKeySet, setApiKeySet] = useState(false);
   const [dbStatus, setDbStatus] = useState<"supabase" | "local">("local");
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string, onConfirm: () => void } | null>(null);
+  const [viewImages, setViewImages] = useState<string[] | null>(null);
+  const [filterCandidate, setFilterCandidate] = useState("");
+  const [filterScoreMin, setFilterScoreMin] = useState("");
+  const [filterScoreMax, setFilterScoreMax] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail">("all");
+  const [filterConfidenceMin, setFilterConfidenceMin] = useState("");
+  const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "score_desc" | "score_asc" | "confidence_desc" | "confidence_asc">("date_desc");
+  const [breakdownQuestion, setBreakdownQuestion] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' } 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      streamRef.current = stream;
+    } catch (err) {
+      console.error("Error accessing camera:", err);
+      alert("Could not access the camera. Please ensure permissions are granted.");
+      setShowCamera(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (showCamera && !capturedImage) {
+      startCamera();
+    } else {
+      stopCamera();
+      if (!showCamera) {
+        setCapturedImage(null);
+      }
+    }
+    return () => stopCamera();
+  }, [showCamera, capturedImage]);
+
+  const capturePhoto = () => {
+    if (videoRef.current && canvasRef.current) {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        setCapturedImage(dataUrl);
+      }
+    }
+  };
+
+  const retakePhoto = () => {
+    setCapturedImage(null);
+  };
+
+  const analyzeCapturedPhoto = async () => {
+    if (!capturedImage) return;
+    
+    // Convert data URL to File object
+    const res = await fetch(capturedImage);
+    const blob = await res.blob();
+    const file = new File([blob], "captured-exam.jpg", { type: "image/jpeg" });
+    
+    setShowCamera(false);
+    setCapturedImage(null);
+    await processFiles([file]);
+  };
 
   useEffect(() => {
     setApiKeySet(!!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY");
@@ -96,37 +177,47 @@ export default function App() {
   }, []);
 
   const deleteExam = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this exam and all its results?")) return;
-    
-    try {
-      await db.deleteExamData(id);
-      fetchExams();
-      if (selectedExamId === id) {
-        setSelectedExamId("");
+    setConfirmDialog({
+      message: "Are you sure you want to delete this exam and all its results?",
+      onConfirm: async () => {
+        try {
+          await db.deleteExamData(id);
+          fetchExams();
+          if (selectedExamId === id) {
+            setSelectedExamId("");
+          }
+        } catch (err) {
+          console.error("Failed to delete exam", err);
+        }
+        setConfirmDialog(null);
       }
-    } catch (err) {
-      console.error("Failed to delete exam", err);
-    }
+    });
   };
 
   const deleteResult = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this result?")) return;
-    
-    try {
-      await db.deleteResultData(id);
-      fetchResults(selectedExamId);
-    } catch (err) {
-      console.error("Failed to delete result", err);
-    }
+    setConfirmDialog({
+      message: "Are you sure you want to delete this result?",
+      onConfirm: async () => {
+        try {
+          await db.deleteResultData(id);
+          fetchResults(selectedExamId);
+          await idbDel(`images_${id}`);
+        } catch (err) {
+          console.error("Failed to delete result", err);
+        }
+        setConfirmDialog(null);
+      }
+    });
   };
 
   const exportCSV = () => {
     if (results.length === 0) return;
     
-    const headers = ["Date", "Candidate Number", "Score", "Max Score", "Status", "Confidence"];
+    const headers = ["Date", "Candidate Number", "Candidate ID", "Score", "Max Score", "Status", "Confidence"];
     const rows = results.map(r => [
       new Date(r.created_at).toLocaleDateString(),
       r.candidate_number,
+      r.candidate_id && r.candidate_id !== "Unknown" ? r.candidate_id : "N/A",
       r.score,
       r.max_score,
       r.is_passing ? "PASS" : "FAIL",
@@ -186,8 +277,7 @@ export default function App() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const processFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0 || !selectedExamId) return;
 
     setIsUploading(true);
@@ -222,34 +312,86 @@ export default function App() {
           images = [await imagePromise];
         }
 
-        let allExamAnswers: Record<string, any> = { _unsure: [] };
-        let candidateNumber = "Unknown";
-        let totalConfidence = 0;
-        let pagesAnalyzed = 0;
+        let currentCandidateAnswers: Record<string, any> = { _unsure: [] };
+        let currentCandidateNumber = "Unknown";
+        let currentCandidateId = "Unknown";
+        let currentTotalConfidence = 0;
+        let currentPagesAnalyzed = 0;
+        let currentImages: string[] = [];
+        let lastResultData: any = null;
 
-        for (const imageBase64 of images) {
+        const saveCurrentResult = async () => {
+          if (currentPagesAnalyzed === 0) return;
+          
+          let score = 0;
+          let totalCorrect = 0;
+          let totalWrong = 0;
+          
+          Object.keys(answerKey).forEach(q => {
+            const studentAns = currentCandidateAnswers[q];
+            if (studentAns === answerKey[q]) {
+              score += 1;
+              totalCorrect++;
+            } else if (studentAns && studentAns !== "") {
+              score -= currentExam.penalty;
+              totalWrong++;
+            }
+          });
+
+          const maxScore = currentExam.num_questions;
+          const scorePercentage = (score / maxScore) * 100;
+          const isPassing = scorePercentage >= currentExam.passing_score;
+
+          const resultId = crypto.randomUUID();
+          const resultData: any = {
+            id: resultId,
+            exam_id: selectedExamId,
+            candidate_number: currentCandidateNumber,
+            candidate_id: currentCandidateId !== "Unknown" ? currentCandidateId : undefined,
+            answers: JSON.stringify(currentCandidateAnswers),
+            score: parseFloat(score.toFixed(2)),
+            max_score: maxScore,
+            is_passing: isPassing,
+            confidence: currentTotalConfidence / currentPagesAnalyzed,
+            created_at: new Date().toISOString(),
+            total_correct: totalCorrect,
+            total_wrong: totalWrong
+          };
+
+          await db.saveResult(resultData);
+          
+          try {
+            await idbSet(`images_${resultId}`, JSON.stringify(currentImages));
+          } catch (e) {
+            console.error("Failed to save images to IndexedDB:", e);
+          }
+
+          lastResultData = { ...resultData, answers: currentCandidateAnswers };
+        };
+
+        for (let j = 0; j < images.length; j++) {
+          const imageBase64 = images[j];
           let retryCount = 0;
           let analysisSuccess = false;
           let analysis: any = null;
 
           while (retryCount < 2 && !analysisSuccess) {
-            setUploadProgress(`Preparing page ${pagesAnalyzed + 1} of ${images.length} for AI analysis...${retryCount > 0 ? ` (Retry ${retryCount})` : ''}`);
+            setUploadProgress(`Preparing page ${j + 1} of ${images.length} for AI analysis...${retryCount > 0 ? ` (Retry ${retryCount})` : ''}`);
             await new Promise(resolve => setTimeout(resolve, 500));
             
-            setUploadProgress(`AI is scanning page ${pagesAnalyzed + 1} of ${images.length} (this may take a few seconds)...`);
+            setUploadProgress(`AI is scanning page ${j + 1} of ${images.length} (this may take a few seconds)...`);
             try {
               analysis = await analyzeExamSheet(
                 imageBase64, 
                 currentExam.num_questions,
                 (msg) => {
-                  setUploadProgress(`Page ${pagesAnalyzed + 1}/${images.length}: ${msg}`);
+                  setUploadProgress(`Page ${j + 1}/${images.length}: ${msg}`);
                 }
               );
               
-              setUploadProgress(`Processing answers from page ${pagesAnalyzed + 1}...`);
+              setUploadProgress(`Processing answers from page ${j + 1}...`);
               await new Promise(resolve => setTimeout(resolve, 500));
               
-              // Validate analysis result
               if (!analysis || typeof analysis !== "object" || !analysis.detected_answers) {
                 console.error("Invalid AI analysis result:", analysis);
                 throw new Error("Invalid format");
@@ -264,13 +406,13 @@ export default function App() {
 
               analysisSuccess = true;
             } catch (pageError) {
-              console.error(`Error analyzing page ${pagesAnalyzed + 1}:`, pageError);
+              console.error(`Error analyzing page ${j + 1}:`, pageError);
               if (retryCount < 1) {
-                setUploadProgress(`Warning: Failed to analyze page ${pagesAnalyzed + 1}. Retrying...`);
+                setUploadProgress(`Warning: Failed to analyze page ${j + 1}. Retrying...`);
                 retryCount++;
                 await new Promise(resolve => setTimeout(resolve, 2000));
               } else {
-                setUploadProgress(`Warning: Failed to analyze page ${pagesAnalyzed + 1} after retries. Continuing...`);
+                setUploadProgress(`Warning: Failed to analyze page ${j + 1} after retries. Continuing...`);
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 break;
               }
@@ -278,16 +420,43 @@ export default function App() {
           }
 
           if (!analysisSuccess) {
-            pagesAnalyzed++;
+            currentPagesAnalyzed++;
+            currentImages.push(imageBase64);
             continue;
           }
 
+          const detectedCandidateNumber = analysis.candidate_number && analysis.candidate_number !== "null" 
+            ? String(analysis.candidate_number).trim().substring(0, 20) 
+            : null;
+
+          const detectedCandidateId = analysis.candidate_id && analysis.candidate_id !== "null"
+            ? String(analysis.candidate_id).trim().substring(0, 20)
+            : null;
+
+          if ((detectedCandidateNumber || detectedCandidateId) && currentPagesAnalyzed > 0) {
+            setUploadProgress(`New candidate detected. Saving previous exam...`);
+            await saveCurrentResult();
+            
+            currentCandidateAnswers = { _unsure: [] };
+            currentCandidateNumber = detectedCandidateNumber || "Unknown";
+            currentCandidateId = detectedCandidateId || "Unknown";
+            currentTotalConfidence = 0;
+            currentPagesAnalyzed = 0;
+            currentImages = [];
+          } else {
+            if (detectedCandidateNumber && currentCandidateNumber === "Unknown") {
+              currentCandidateNumber = detectedCandidateNumber;
+            }
+            if (detectedCandidateId && currentCandidateId === "Unknown") {
+              currentCandidateId = detectedCandidateId;
+            }
+          }
+
           const numAnswersFound = Array.isArray(analysis.detected_answers) ? analysis.detected_answers.length : 0;
-          console.log(`AI found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}`);
-          setUploadProgress(`Found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}. Merging data...`);
+          console.log(`AI found ${numAnswersFound} answers on page ${j + 1}`);
+          setUploadProgress(`Found ${numAnswersFound} answers on page ${j + 1}. Merging data...`);
           await new Promise(resolve => setTimeout(resolve, 500));
 
-          // Clean and merge answers (ensure only short strings are stored)
           const cleanedAnswers: Record<string, any> = {};
           const unsureList: string[] = [];
           
@@ -303,68 +472,22 @@ export default function App() {
             });
           }
 
-          allExamAnswers = { 
-            ...allExamAnswers, 
+          currentCandidateAnswers = { 
+            ...currentCandidateAnswers, 
             ...cleanedAnswers,
-            _unsure: [...(allExamAnswers._unsure || []), ...unsureList]
+            _unsure: [...(currentCandidateAnswers._unsure || []), ...unsureList]
           };
           
-          // Use the first candidate number found or keep searching
-          if (candidateNumber === "Unknown" && analysis.candidate_number && analysis.candidate_number !== "null") {
-            candidateNumber = String(analysis.candidate_number).trim().substring(0, 20);
-          }
-          
-          totalConfidence += (Number(analysis.confidence) || 0.5);
-          pagesAnalyzed++;
+          currentTotalConfidence += (Number(analysis.confidence) || 0.5);
+          currentPagesAnalyzed++;
+          currentImages.push(imageBase64);
         }
 
-        const totalAnswersFound = Object.keys(allExamAnswers).length;
-        if (totalAnswersFound === 0) {
-          setUploadProgress("Warning: AI could not find any answers on the sheet.");
-          console.warn("AI returned 0 answers for file:", file.name);
-        } else {
-          setUploadProgress(`Success: Found ${totalAnswersFound} answers.`);
+        await saveCurrentResult();
+
+        if (lastResultData) {
+          setCurrentResult(lastResultData);
         }
-
-        if (pagesAnalyzed === 0) continue;
-
-        // Calculate score after all pages are merged
-        let score = 0;
-        let totalCorrect = 0;
-        let totalWrong = 0;
-        
-        Object.keys(answerKey).forEach(q => {
-          const studentAns = allExamAnswers[q];
-          if (studentAns === answerKey[q]) {
-            score += 1;
-            totalCorrect++;
-          } else if (studentAns && studentAns !== "") {
-            score -= currentExam.penalty;
-            totalWrong++;
-          }
-        });
-
-        const maxScore = currentExam.num_questions;
-        const scorePercentage = (score / maxScore) * 100;
-        const isPassing = scorePercentage >= currentExam.passing_score;
-
-        const resultId = crypto.randomUUID();
-        const resultData: any = {
-          id: resultId,
-          exam_id: selectedExamId,
-          candidate_number: candidateNumber,
-          answers: JSON.stringify(allExamAnswers),
-          score: parseFloat(score.toFixed(2)),
-          max_score: maxScore,
-          is_passing: isPassing,
-          confidence: totalConfidence / pagesAnalyzed,
-          created_at: new Date().toISOString(),
-          total_correct: totalCorrect,
-          total_wrong: totalWrong
-        };
-
-        await db.saveResult(resultData);
-        setCurrentResult({ ...resultData, answers: allExamAnswers });
       }
       
       fetchResults(selectedExamId);
@@ -378,6 +501,13 @@ export default function App() {
         setUploadProgress("");
       }, 2000);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await processFiles(e.target.files);
+    }
+    e.target.value = '';
   };
 
   const createExam = async () => {
@@ -486,10 +616,13 @@ export default function App() {
   };
 
   const clearAllData = async () => {
-    if (confirm("WARNING: This will delete ALL exams and results. This action cannot be undone. Proceed?")) {
-      await db.clearAll();
-      window.location.reload();
-    }
+    setConfirmDialog({
+      message: "WARNING: This will delete ALL exams and results. This action cannot be undone. Proceed?",
+      onConfirm: async () => {
+        await db.clearAll();
+        window.location.reload();
+      }
+    });
   };
 
   const updateAnswerKey = async (q: string, val: string) => {
@@ -514,26 +647,101 @@ export default function App() {
   const incorrectCount = totalQuestions - correctCount - unansweredCount;
   const unsureCount = currentResult?.answers?._unsure?.length || 0;
 
+  const filteredResults = results.filter(r => {
+    if (filterCandidate) {
+      const search = filterCandidate.toLowerCase();
+      const matchNumber = r.candidate_number.toLowerCase().includes(search);
+      const matchId = r.candidate_id ? r.candidate_id.toLowerCase().includes(search) : false;
+      if (!matchNumber && !matchId) return false;
+    }
+    if (filterScoreMin && r.score < parseFloat(filterScoreMin)) return false;
+    if (filterScoreMax && r.score > parseFloat(filterScoreMax)) return false;
+    if (filterStatus === "pass" && !r.is_passing) return false;
+    if (filterStatus === "fail" && r.is_passing) return false;
+    if (filterConfidenceMin && r.confidence < parseFloat(filterConfidenceMin) / 100) return false;
+    return true;
+  }).sort((a, b) => {
+    switch (sortBy) {
+      case "date_asc": return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      case "score_desc": return b.score - a.score;
+      case "score_asc": return a.score - b.score;
+      case "confidence_desc": return (b.confidence || 0) - (a.confidence || 0);
+      case "confidence_asc": return (a.confidence || 0) - (b.confidence || 0);
+      case "date_desc":
+      default:
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    }
+  });
+
+  const exportSingleResult = () => {
+    if (!currentResult) return;
+    
+    const headers = ["Question", "Student Answer", "Correct Answer", "Status"];
+    const rows = Object.keys(answerKey).sort((a, b) => parseInt(a) - parseInt(b)).map(q => {
+      const studentAns = currentResult.answers[q] || "—";
+      const correctAns = answerKey[q];
+      const status = studentAns === correctAns ? "Correct" : (!currentResult.answers[q] ? "Unanswered" : "Incorrect");
+      return [q, studentAns, correctAns, status];
+    });
+    
+    const csvContent = [
+      `Candidate Number,${currentResult.candidate_number}`,
+      `Candidate ID,${currentResult.candidate_id && currentResult.candidate_id !== "Unknown" ? currentResult.candidate_id : "N/A"}`,
+      `Score,${currentResult.score}/${currentResult.max_score}`,
+      `Status,${currentResult.is_passing ? "PASS" : "FAIL"}`,
+      `Date,${new Date(currentResult.created_at).toLocaleDateString()}`,
+      "",
+      headers.join(","),
+      ...rows.map(row => row.join(","))
+    ].join("\n");
+    
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `result_${currentResult.candidate_number}_${selectedExamId}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getQuestionBreakdown = (q: string) => {
+    const breakdown: Record<string, number> = {};
+    let total = 0;
+    results.forEach(r => {
+      try {
+        const ans = typeof r.answers === 'string' ? JSON.parse(r.answers) : r.answers;
+        const studentAns = ans[q] || "Unanswered";
+        breakdown[studentAns] = (breakdown[studentAns] || 0) + 1;
+        total++;
+      } catch (e) {}
+    });
+    return { breakdown, total };
+  };
+
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
       {/* Header */}
-      <header className="border-b border-[#141414] p-6 flex justify-between items-center">
+      <header className="border-b border-[#141414] p-4 lg:p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tighter uppercase italic font-serif">ExamChecker AI</h1>
-          <p className="text-xs opacity-50 uppercase tracking-widest mt-1">Vision-Powered OMR Engine</p>
+          <h1 className="text-2xl lg:text-3xl font-bold tracking-tighter uppercase italic font-serif">ExamChecker AI</h1>
+          <p className="text-[10px] lg:text-xs opacity-50 uppercase tracking-widest mt-1">Vision-Powered OMR Engine</p>
         </div>
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-2 lg:gap-4 w-full md:w-auto">
           <div className={cn(
-            "flex items-center gap-2 px-3 py-1 border text-[10px] font-mono uppercase tracking-widest",
+            "flex items-center gap-2 px-3 py-1 border text-[10px] font-mono uppercase tracking-widest flex-1 md:flex-none justify-center",
             dbStatus === "supabase" ? "border-green-600/50 text-green-600" : "border-amber-600/50 text-amber-600"
           )}>
             {dbStatus === "supabase" ? <Database size={12} /> : <CloudOff size={12} />}
-            {dbStatus === "supabase" ? "Supabase Connected" : "Local Only"}
+            <span className="hidden sm:inline">{dbStatus === "supabase" ? "Supabase Connected" : "Local Only"}</span>
+            <span className="sm:inline hidden">{dbStatus === "supabase" ? "" : ""}</span>
+            <span className="sm:hidden">{dbStatus === "supabase" ? "Supabase" : "Local"}</span>
           </div>
           <select 
             value={selectedExamId}
             onChange={(e) => setSelectedExamId(e.target.value)}
-            className="bg-transparent border border-[#141414] px-3 py-1 text-sm focus:outline-none"
+            className="bg-transparent border border-[#141414] px-3 py-1 text-xs lg:text-sm focus:outline-none flex-1 md:flex-none"
           >
             {exams.map(exam => (
               <option key={exam.id} value={exam.id}>{exam.name}</option>
@@ -541,36 +749,39 @@ export default function App() {
           </select>
           <button 
             onClick={() => setActiveTab("settings")}
-            className="p-2 border border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+            className="p-2 border border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors flex-none"
           >
-            <Settings size={18} />
+            <Settings size={16} className="lg:w-[18px] lg:h-[18px]" />
           </button>
         </div>
       </header>
 
       <div className="flex flex-col lg:flex-row min-h-[calc(100vh-100px)]">
         {/* Sidebar Navigation */}
-        <nav className="w-full lg:w-20 border-b lg:border-b-0 lg:border-r border-[#141414] flex lg:flex-col items-center py-4 lg:py-8 gap-8 px-4 lg:px-0">
+        <nav className="w-full lg:w-20 border-b lg:border-b-0 lg:border-r border-[#141414] flex lg:flex-col items-center justify-center py-2 lg:py-8 gap-2 sm:gap-4 lg:gap-8 px-2 sm:px-4 lg:px-0 overflow-x-auto">
           <button 
             onClick={() => setActiveTab("correct")}
-            className={cn("p-3 transition-all", activeTab === "correct" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
+            className={cn("p-2 sm:p-3 transition-all flex items-center gap-2 lg:block", activeTab === "correct" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
             title="Correction"
           >
-            <Upload size={24} />
+            <Upload size={20} className="lg:w-6 lg:h-6" />
+            <span className="lg:hidden text-[10px] sm:text-xs font-mono uppercase">Correct</span>
           </button>
           <button 
             onClick={() => setActiveTab("history")}
-            className={cn("p-3 transition-all", activeTab === "history" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
+            className={cn("p-2 sm:p-3 transition-all flex items-center gap-2 lg:block", activeTab === "history" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
             title="History"
           >
-            <History size={24} />
+            <History size={20} className="lg:w-6 lg:h-6" />
+            <span className="lg:hidden text-[10px] sm:text-xs font-mono uppercase">History</span>
           </button>
           <button 
             onClick={() => setActiveTab("settings")}
-            className={cn("p-3 transition-all", activeTab === "settings" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
+            className={cn("p-2 sm:p-3 transition-all flex items-center gap-2 lg:block", activeTab === "settings" ? "bg-[#141414] text-[#E4E3E0]" : "hover:opacity-50")}
             title="Answer Key"
           >
-            <FileText size={24} />
+            <FileText size={20} className="lg:w-6 lg:h-6" />
+            <span className="lg:hidden text-[10px] sm:text-xs font-mono uppercase">Key</span>
           </button>
         </nav>
 
@@ -587,7 +798,7 @@ export default function App() {
               >
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                   <div className="space-y-8">
-                    <h2 className="text-4xl font-serif italic">Upload Sheets</h2>
+                    <h2 className="text-3xl sm:text-4xl font-serif italic">Upload Sheets</h2>
                     <p className="opacity-70 leading-relaxed">
                       Drop your PDF scans or photos here. Gemini Vision will automatically detect the bubbles, 
                       read the candidate number, and compare with the answer key.
@@ -603,7 +814,7 @@ export default function App() {
                         disabled={isUploading || !selectedExamId}
                       />
                       <div className={cn(
-                        "border-2 border-dashed border-[#141414] p-12 flex flex-col items-center justify-center gap-4 transition-all",
+                        "border-2 border-dashed border-[#141414] p-8 sm:p-12 flex flex-col items-center justify-center gap-4 transition-all",
                         isUploading ? "opacity-50" : "group-hover:bg-[#141414]/5"
                       )}>
                         {isUploading ? (
@@ -611,7 +822,7 @@ export default function App() {
                         ) : (
                           <Upload size={48} />
                         )}
-                        <span className="text-sm font-mono uppercase tracking-widest">
+                        <span className="text-sm font-mono uppercase tracking-widest text-center">
                           {isUploading ? uploadProgress : "Drag & Drop or Click"}
                         </span>
                       </div>
@@ -628,17 +839,22 @@ export default function App() {
                   </div>
 
                   <div className="space-y-8">
-                    <h2 className="text-4xl font-serif italic">Live Result</h2>
+                    <h2 className="text-3xl sm:text-4xl font-serif italic">Live Result</h2>
                     {currentResult ? (
                       <motion.div 
                         initial={{ scale: 0.95, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
-                        className="border border-[#141414] p-8 space-y-6 bg-white shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+                        className="border border-[#141414] p-4 sm:p-8 space-y-6 bg-white shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] sm:shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
                       >
                         <div className="flex justify-between items-start border-b border-[#141414] pb-4">
                           <div>
                             <span className="text-[10px] uppercase opacity-50 font-mono">Candidate</span>
-                            <p className="text-2xl font-mono font-bold">#{currentResult.candidate_number}</p>
+                            <p className="text-2xl font-mono font-bold">
+                              #{currentResult.candidate_number}
+                              {currentResult.candidate_id && currentResult.candidate_id !== "Unknown" && (
+                                <span className="ml-2 text-lg text-gray-500">({currentResult.candidate_id})</span>
+                              )}
+                            </p>
                           </div>
                           <div className="text-right">
                             <span className="text-[10px] uppercase opacity-50 font-mono">Confidence</span>
@@ -649,7 +865,7 @@ export default function App() {
                         <div className="flex items-center justify-center py-8 border-b border-[#141414]">
                           <div className="text-center">
                             <span className="text-[10px] uppercase opacity-50 font-mono">Total Score</span>
-                            <p className="text-7xl font-bold font-serif italic">{currentResult.score}<span className="text-2xl opacity-30 not-italic">/{currentResult.max_score || "-"}</span></p>
+                            <p className="text-5xl sm:text-7xl font-bold font-serif italic">{currentResult.score}<span className="text-xl sm:text-2xl opacity-30 not-italic">/{currentResult.max_score || "-"}</span></p>
                           </div>
                         </div>
 
@@ -684,7 +900,7 @@ export default function App() {
                 className="max-w-6xl mx-auto"
               >
                 <div className="flex justify-between items-end mb-12">
-                  <h2 className="text-5xl font-serif italic">History</h2>
+                  <h2 className="text-4xl sm:text-5xl font-serif italic">History</h2>
                   <button 
                     onClick={exportCSV}
                     className="text-xs font-mono uppercase border-b border-[#141414] pb-1 hover:opacity-50"
@@ -694,22 +910,22 @@ export default function App() {
                 </div>
 
                 {/* Statistics Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-                  <div className="border border-[#141414] p-6 space-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-8 mb-12">
+                  <div className="border border-[#141414] p-4 sm:p-6 space-y-2">
                     <span className="text-[10px] uppercase opacity-50 font-mono tracking-widest">Avg Score</span>
-                    <p className="text-4xl font-serif italic">
+                    <p className="text-3xl sm:text-4xl font-serif italic">
                       {results.length > 0 
                         ? (results.reduce((acc, r) => acc + r.score, 0) / results.length).toFixed(1)
                         : "0.0"}
                     </p>
                   </div>
-                  <div className="border border-[#141414] p-6 space-y-2">
+                  <div className="border border-[#141414] p-4 sm:p-6 space-y-2">
                     <span className="text-[10px] uppercase opacity-50 font-mono tracking-widest">Candidates</span>
-                    <p className="text-4xl font-serif italic">{results.length}</p>
+                    <p className="text-3xl sm:text-4xl font-serif italic">{results.length}</p>
                   </div>
-                  <div className="border border-[#141414] p-6 space-y-2">
+                  <div className="border border-[#141414] p-4 sm:p-6 space-y-2">
                     <span className="text-[10px] uppercase opacity-50 font-mono tracking-widest">Pass Rate</span>
-                    <p className="text-4xl font-serif italic">
+                    <p className="text-3xl sm:text-4xl font-serif italic">
                       {results.length > 0
                         ? ((results.filter(r => r.is_passing).length / results.length) * 100).toFixed(0) + "%"
                         : "0%"}
@@ -717,8 +933,78 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="border border-[#141414] mb-8 p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Candidate #</label>
+                    <input 
+                      type="text" 
+                      value={filterCandidate}
+                      onChange={e => setFilterCandidate(e.target.value)}
+                      placeholder="Search..."
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Min Score</label>
+                    <input 
+                      type="number" 
+                      value={filterScoreMin}
+                      onChange={e => setFilterScoreMin(e.target.value)}
+                      placeholder="0"
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Max Score</label>
+                    <input 
+                      type="number" 
+                      value={filterScoreMax}
+                      onChange={e => setFilterScoreMax(e.target.value)}
+                      placeholder="100"
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Status</label>
+                    <select 
+                      value={filterStatus}
+                      onChange={e => setFilterStatus(e.target.value as any)}
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    >
+                      <option value="all">All</option>
+                      <option value="pass">Pass</option>
+                      <option value="fail">Fail</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Min Conf (%)</label>
+                    <input 
+                      type="number" 
+                      value={filterConfidenceMin}
+                      onChange={e => setFilterConfidenceMin(e.target.value)}
+                      placeholder="0"
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] uppercase font-mono opacity-50">Sort By</label>
+                    <select 
+                      value={sortBy}
+                      onChange={e => setSortBy(e.target.value as any)}
+                      className="bg-transparent border-b border-[#141414] px-2 py-1 text-sm focus:outline-none w-full"
+                    >
+                      <option value="date_desc">Newest First</option>
+                      <option value="date_asc">Oldest First</option>
+                      <option value="score_desc">Highest Score</option>
+                      <option value="score_asc">Lowest Score</option>
+                      <option value="confidence_desc">Highest Conf</option>
+                      <option value="confidence_asc">Lowest Conf</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div className="border border-[#141414]">
-                  <div className="grid grid-cols-5 bg-[#141414] text-[#E4E3E0] p-4 text-[10px] uppercase tracking-widest font-mono">
+                  <div className="hidden md:grid grid-cols-5 bg-[#141414] text-[#E4E3E0] p-4 text-[10px] uppercase tracking-widest font-mono">
                     <span>Date</span>
                     <span>Candidate</span>
                     <span>Score</span>
@@ -726,25 +1012,42 @@ export default function App() {
                     <span className="text-right">Actions</span>
                   </div>
                   <div className="divide-y divide-[#141414]">
-                    {results.length === 0 ? (
-                      <div className="p-12 text-center opacity-50 uppercase text-xs tracking-widest">No results found for this exam</div>
+                    {filteredResults.length === 0 ? (
+                      <div className="p-12 text-center opacity-50 uppercase text-xs tracking-widest">No results found matching filters</div>
                     ) : (
-                      results.map(res => (
-                        <div key={res.id} className="grid grid-cols-5 p-4 items-center hover:bg-[#141414]/5 transition-colors">
-                          <span className="text-xs font-mono">{new Date(res.created_at).toLocaleDateString()}</span>
-                          <span className="font-bold font-mono">#{res.candidate_number}</span>
-                          <span className="text-xl font-serif italic">{res.score}/{res.max_score || "-"}</span>
-                          <span className="text-xs font-mono">{res.confidence ? (res.confidence * 100).toFixed(0) + "%" : "N/A"}</span>
-                          <div className="flex justify-end gap-4">
-                            <button className="hover:opacity-50" onClick={() => {
+                      filteredResults.map(res => (
+                        <div key={res.id} className="grid grid-cols-1 md:grid-cols-5 p-4 items-center gap-4 md:gap-0 hover:bg-[#141414]/5 transition-colors">
+                          <div className="flex justify-between md:block">
+                            <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Date</span>
+                            <span className="text-xs font-mono">{new Date(res.created_at).toLocaleDateString()}</span>
+                          </div>
+                          <div className="flex justify-between md:block items-center">
+                            <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Candidate</span>
+                            <span className="font-bold font-mono">
+                              #{res.candidate_number}
+                              {res.candidate_id && res.candidate_id !== "Unknown" && (
+                                <span className="ml-1 text-xs text-gray-500 font-normal">({res.candidate_id})</span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex justify-between md:block items-center">
+                            <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Score</span>
+                            <span className="text-xl font-serif italic">{res.score}/{res.max_score || "-"}</span>
+                          </div>
+                          <div className="flex justify-between md:block items-center">
+                            <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Confidence</span>
+                            <span className="text-xs font-mono">{res.confidence ? (res.confidence * 100).toFixed(0) + "%" : "N/A"}</span>
+                          </div>
+                          <div className="flex justify-end gap-4 mt-2 md:mt-0 pt-2 md:pt-0 border-t border-[#141414]/10 md:border-0">
+                            <button className="hover:opacity-50 flex items-center gap-2 text-xs uppercase font-mono" onClick={() => {
                               try {
                                 setCurrentResult({ ...res, answers: JSON.parse(res.answers) });
                                 setActiveTab("detail");
                               } catch (e) {
                                 console.error("Failed to parse result answers:", e);
                               }
-                            }}><Eye size={16} /></button>
-                            <button className="hover:text-red-600" onClick={() => deleteResult(res.id)}><Trash2 size={16} /></button>
+                            }}><Eye size={16} /> <span className="md:hidden">View</span></button>
+                            <button className="hover:text-red-600 flex items-center gap-2 text-xs uppercase font-mono" onClick={() => deleteResult(res.id)}><Trash2 size={16} /> <span className="md:hidden">Delete</span></button>
                           </div>
                         </div>
                       ))
@@ -764,10 +1067,10 @@ export default function App() {
               >
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-8 mb-12">
                   <div>
-                    <h2 className="text-5xl font-serif italic">Exam Settings</h2>
+                    <h2 className="text-4xl sm:text-5xl font-serif italic">Exam Settings</h2>
                     <p className="text-sm opacity-50 mt-2 uppercase tracking-widest">Configure session parameters and answer key</p>
                   </div>
-                  <div className="flex gap-4 w-full md:w-auto">
+                  <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 w-full md:w-auto">
                     <input 
                       type="text" 
                       placeholder="New Exam Name"
@@ -775,19 +1078,21 @@ export default function App() {
                       onChange={(e) => setNewExamName(e.target.value)}
                       className="bg-transparent border border-[#141414] px-4 py-2 text-sm focus:outline-none flex-1"
                     />
-                    <button 
-                      onClick={createExam}
-                      className="bg-[#141414] text-[#E4E3E0] px-6 py-2 text-xs uppercase tracking-widest hover:opacity-90"
-                    >
-                      Create
-                    </button>
-                    <button 
-                      onClick={() => deleteExam(selectedExamId)}
-                      className="border border-red-600 text-red-600 px-4 py-2 text-xs uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all"
-                      disabled={!selectedExamId}
-                    >
-                      Delete
-                    </button>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={createExam}
+                        className="flex-1 bg-[#141414] text-[#E4E3E0] px-6 py-2 text-xs uppercase tracking-widest hover:opacity-90"
+                      >
+                        Create
+                      </button>
+                      <button 
+                        onClick={() => deleteExam(selectedExamId)}
+                        className="flex-1 border border-red-600 text-red-600 px-4 py-2 text-xs uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all"
+                        disabled={!selectedExamId}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -840,19 +1145,19 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="space-y-8 border-l border-[#141414] pl-0 md:pl-12">
+                    <div className="space-y-8 pt-8 md:pt-0 border-t md:border-t-0 md:border-l border-[#141414] pl-0 md:pl-12">
                       <h3 className="text-2xl font-serif italic">Data Management</h3>
                       <div className="space-y-4">
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                           <span className="text-sm">Answer Key CSV Tools</span>
-                          <div className="flex gap-2">
-                            <label className="cursor-pointer bg-[#141414] text-[#E4E3E0] px-4 py-2 text-[10px] uppercase tracking-widest hover:opacity-80">
+                          <div className="flex gap-2 w-full sm:w-auto">
+                            <label className="flex-1 sm:flex-none text-center cursor-pointer bg-[#141414] text-[#E4E3E0] px-4 py-2 text-[10px] uppercase tracking-widest hover:opacity-80">
                               Import
                               <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
                             </label>
                             <button 
                               onClick={exportAnswerKeyCSV}
-                              className="border border-[#141414] px-4 py-2 text-[10px] uppercase tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0]"
+                              className="flex-1 sm:flex-none border border-[#141414] px-4 py-2 text-[10px] uppercase tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0]"
                             >
                               Export
                             </button>
@@ -904,7 +1209,7 @@ export default function App() {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-12">
                   <div>
                     <div className="flex items-center gap-4">
-                      <h2 className="text-5xl font-serif italic">Result Detail</h2>
+                      <h2 className="text-4xl sm:text-5xl font-serif italic">Result Detail</h2>
                       <span className={cn(
                         "px-3 py-1 text-[10px] font-mono uppercase tracking-widest border",
                         currentResult.is_passing ? "border-green-600 text-green-600" : "border-red-600 text-red-600"
@@ -913,45 +1218,76 @@ export default function App() {
                       </span>
                     </div>
                     <p className="text-sm opacity-50 mt-2 uppercase tracking-widest">
-                      Candidate #{currentResult.candidate_number} • 
+                      Candidate #{currentResult.candidate_number} 
+                      {currentResult.candidate_id && currentResult.candidate_id !== "Unknown" && ` (${currentResult.candidate_id})`} • 
                       Score: <span className="text-[#141414] font-bold">{currentResult.score}/{currentResult.max_score || "-"}</span> • 
                       Confidence: {currentResult.confidence ? (currentResult.confidence * 100).toFixed(1) + "%" : "N/A"}
                     </p>
                   </div>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap gap-2 lg:gap-4 w-full md:w-auto">
+                    <button 
+                      onClick={async () => {
+                        try {
+                          const imgsStr = await idbGet(`images_${currentResult.id}`);
+                          const imgs = imgsStr ? JSON.parse(imgsStr) : [];
+                          if (imgs && imgs.length > 0) {
+                            setViewImages(imgs);
+                          } else {
+                            setConfirmDialog({
+                              message: "Original images not found for this result. They might have been deleted or were too large to save locally.",
+                              onConfirm: () => setConfirmDialog(null)
+                            });
+                          }
+                        } catch (e) {
+                          setConfirmDialog({
+                            message: "Failed to load original images.",
+                            onConfirm: () => setConfirmDialog(null)
+                          });
+                        }
+                      }}
+                      className="flex-1 md:flex-none justify-center text-[10px] lg:text-xs font-mono uppercase border border-[#141414] px-3 lg:px-4 py-2 hover:bg-[#141414] hover:text-[#E4E3E0] transition-all flex items-center gap-2"
+                    >
+                      <Eye size={14} /> View Original
+                    </button>
+                    <button 
+                      onClick={exportSingleResult}
+                      className="flex-1 md:flex-none justify-center text-[10px] lg:text-xs font-mono uppercase border border-[#141414] px-3 lg:px-4 py-2 hover:bg-[#141414] hover:text-[#E4E3E0] transition-all"
+                    >
+                      Export CSV
+                    </button>
                     <button 
                       onClick={() => setActiveTab("correct")}
-                      className="text-xs font-mono uppercase border border-[#141414] px-4 py-2 hover:bg-[#141414] hover:text-[#E4E3E0] transition-all"
+                      className="flex-1 md:flex-none justify-center text-[10px] lg:text-xs font-mono uppercase border border-[#141414] px-3 lg:px-4 py-2 hover:bg-[#141414] hover:text-[#E4E3E0] transition-all"
                     >
                       New Upload
                     </button>
                     <button 
                       onClick={() => setActiveTab("history")}
-                      className="text-xs font-mono uppercase bg-[#141414] text-[#E4E3E0] px-4 py-2 hover:opacity-80 transition-all"
+                      className="w-full md:w-auto justify-center text-[10px] lg:text-xs font-mono uppercase bg-[#141414] text-[#E4E3E0] px-3 lg:px-4 py-2 hover:opacity-80 transition-all"
                     >
                       Back to History
                     </button>
                   </div>
                 </div>
 
-                <div className={cn("grid gap-4 mb-12", unsureCount > 0 ? "grid-cols-2 md:grid-cols-4" : "grid-cols-3")}>
-                  <div className="border border-green-600/30 bg-green-600/5 p-6 flex flex-col items-center justify-center">
+                <div className={cn("grid gap-4 mb-12", unsureCount > 0 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-1 sm:grid-cols-3")}>
+                  <div className="border border-green-600/30 bg-green-600/5 p-4 sm:p-6 flex flex-col items-center justify-center">
                     <span className="text-[10px] uppercase font-mono tracking-widest text-green-700 opacity-70">Correct</span>
-                    <span className="text-4xl font-serif italic text-green-700">{correctCount}</span>
+                    <span className="text-3xl sm:text-4xl font-serif italic text-green-700">{correctCount}</span>
                   </div>
-                  <div className="border border-red-600/30 bg-red-600/5 p-6 flex flex-col items-center justify-center">
+                  <div className="border border-red-600/30 bg-red-600/5 p-4 sm:p-6 flex flex-col items-center justify-center">
                     <span className="text-[10px] uppercase font-mono tracking-widest text-red-700 opacity-70">Incorrect</span>
-                    <span className="text-4xl font-serif italic text-red-700">{incorrectCount}</span>
+                    <span className="text-3xl sm:text-4xl font-serif italic text-red-700">{incorrectCount}</span>
                   </div>
-                  <div className="border border-amber-600/30 bg-amber-600/5 p-6 flex flex-col items-center justify-center">
+                  <div className="border border-amber-600/30 bg-amber-600/5 p-4 sm:p-6 flex flex-col items-center justify-center">
                     <span className="text-[10px] uppercase font-mono tracking-widest text-amber-700 opacity-70">Unanswered</span>
-                    <span className="text-4xl font-serif italic text-amber-700">{unansweredCount}</span>
+                    <span className="text-3xl sm:text-4xl font-serif italic text-amber-700">{unansweredCount}</span>
                   </div>
                   {unsureCount > 0 && (
-                    <div className="border border-purple-600/30 bg-purple-600/5 p-6 flex flex-col items-center justify-center relative overflow-hidden">
+                    <div className="border border-purple-600/30 bg-purple-600/5 p-4 sm:p-6 flex flex-col items-center justify-center relative overflow-hidden">
                       <div className="absolute top-0 left-0 w-full h-1 bg-purple-600 animate-pulse" />
-                      <span className="text-[10px] uppercase font-mono tracking-widest text-purple-700 opacity-70">Unsure (Review)</span>
-                      <span className="text-4xl font-serif italic text-purple-700">{unsureCount}</span>
+                      <span className="text-[10px] uppercase font-mono tracking-widest text-purple-700 opacity-70 text-center">Unsure (Review)</span>
+                      <span className="text-3xl sm:text-4xl font-serif italic text-purple-700">{unsureCount}</span>
                     </div>
                   )}
                 </div>
@@ -967,9 +1303,13 @@ export default function App() {
                     </p>
                     <div className="flex flex-wrap gap-2">
                       {currentResult.answers._unsure.map((q: string) => (
-                        <span key={q} className="px-3 py-1 bg-purple-600 text-white text-xs font-mono font-bold rounded-full">
+                        <button 
+                          key={q} 
+                          onClick={() => setBreakdownQuestion(q)}
+                          className="px-3 py-1 bg-purple-600 text-white text-xs font-mono font-bold rounded-full hover:bg-purple-700 transition-colors cursor-pointer"
+                        >
                           Q{q}: {currentResult.answers[q] || "Empty"}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -983,19 +1323,26 @@ export default function App() {
                     const isUnsure = currentResult.answers?._unsure?.includes(q);
 
                     return (
-                      <div key={q} className={cn(
-                        "border p-4 flex flex-col gap-2 transition-all relative",
-                        isCorrect ? "border-green-600/30 bg-green-600/5" : 
-                        !studentAns ? "border-amber-600/30 bg-amber-600/5" : "border-red-600/30 bg-red-600/5",
-                        isUnsure && "ring-2 ring-purple-500 shadow-[0_0_15px_rgba(168,85,247,0.4)]"
-                      )}>
+                      <div 
+                        key={q} 
+                        onClick={() => setBreakdownQuestion(q)}
+                        className={cn(
+                          "border p-4 flex flex-col gap-2 transition-all relative cursor-pointer hover:shadow-md",
+                          isCorrect ? "border-green-600/30 bg-green-600/5 hover:bg-green-600/10" : 
+                          !studentAns ? "border-amber-600/30 bg-amber-600/5 hover:bg-amber-600/10" : "border-red-600/30 bg-red-600/5 hover:bg-red-600/10",
+                          isUnsure && "ring-2 ring-purple-500 shadow-[0_0_15px_rgba(168,85,247,0.4)]"
+                        )}
+                      >
                         {isUnsure && (
                           <div className="absolute -top-2 -right-2 bg-purple-600 text-white text-[8px] uppercase font-bold px-2 py-1 rounded-full animate-pulse">
                             Review
                           </div>
                         )}
                         <div className="flex justify-between items-center border-b border-[#141414]/10 pb-2">
-                          <span className="text-xs font-mono font-bold uppercase">Question {q}</span>
+                          <span className="text-xs font-mono font-bold uppercase flex items-center gap-1">
+                            Question {q}
+                            {isUnsure && <AlertCircle size={12} className="text-purple-600" />}
+                          </span>
                           {isCorrect ? (
                             <CheckCircle size={14} className="text-green-600" />
                           ) : !studentAns ? (
@@ -1030,6 +1377,57 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Breakdown Modal */}
+      {breakdownQuestion && (
+        <div className="fixed inset-0 bg-[#141414]/90 z-50 flex items-center justify-center p-6">
+          <div className="bg-[#E4E3E0] w-full max-w-2xl border border-[#141414] p-8 space-y-6">
+            <div className="flex justify-between items-center">
+              <h3 className="text-2xl font-serif italic">Question {breakdownQuestion} Breakdown</h3>
+              <button onClick={() => setBreakdownQuestion(null)} className="hover:opacity-50"><XCircle size={24} /></button>
+            </div>
+            
+            <div className="space-y-4">
+              <p className="text-sm opacity-70">
+                Correct Answer: <span className="font-bold text-[#141414]">{answerKey[breakdownQuestion]}</span>
+              </p>
+              
+              <div className="border border-[#141414]/20 p-4 space-y-4">
+                {(() => {
+                  const { breakdown, total } = getQuestionBreakdown(breakdownQuestion);
+                  if (total === 0) return <p className="text-sm opacity-50">No results available.</p>;
+                  
+                  return Object.entries(breakdown).sort((a, b) => b[1] - a[1]).map(([ans, count]) => (
+                    <div key={ans} className="space-y-1">
+                      <div className="flex justify-between text-xs font-mono">
+                        <span className="uppercase">{ans === "Unanswered" ? ans : `Answer ${ans}`}</span>
+                        <span>{count} ({((count / total) * 100).toFixed(1)}%)</span>
+                      </div>
+                      <div className="w-full h-2 bg-[#141414]/10 overflow-hidden">
+                        <div 
+                          className={cn(
+                            "h-full",
+                            ans === answerKey[breakdownQuestion] ? "bg-green-600" : 
+                            ans === "Unanswered" ? "bg-amber-600" : "bg-red-600"
+                          )}
+                          style={{ width: `${(count / total) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+            
+            <button 
+              onClick={() => setBreakdownQuestion(null)}
+              className="w-full border border-[#141414] py-3 uppercase text-[10px] font-mono tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* CSV Preview Modal */}
       {csvPreview && (
@@ -1068,7 +1466,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Camera Modal (Simplified) */}
+      {/* Camera Modal */}
       {showCamera && (
         <div className="fixed inset-0 bg-[#141414]/90 z-50 flex items-center justify-center p-6">
           <div className="bg-[#E4E3E0] w-full max-w-2xl border border-[#141414] p-8 space-y-6">
@@ -1076,10 +1474,93 @@ export default function App() {
               <h3 className="text-2xl font-serif italic">Capture Sheet</h3>
               <button onClick={() => setShowCamera(false)} className="hover:opacity-50"><Trash2 size={24} /></button>
             </div>
-            <div className="aspect-[3/4] bg-black border border-[#141414] flex items-center justify-center">
-              <Camera size={48} className="text-white/20" />
+            
+            <div className="relative aspect-[3/4] bg-black border border-[#141414] flex items-center justify-center overflow-hidden">
+              {!capturedImage ? (
+                <video 
+                  ref={videoRef} 
+                  autoPlay 
+                  playsInline 
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              ) : (
+                <img 
+                  src={capturedImage} 
+                  alt="Captured sheet" 
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              )}
+              <canvas ref={canvasRef} className="hidden" />
             </div>
-            <button className="w-full bg-[#141414] text-[#E4E3E0] py-4 uppercase tracking-widest text-sm">Capture & Analyze</button>
+
+            {!capturedImage ? (
+              <button 
+                onClick={capturePhoto}
+                className="w-full bg-[#141414] text-[#E4E3E0] py-4 uppercase tracking-widest text-sm hover:opacity-80 transition-opacity"
+              >
+                Capture Photo
+              </button>
+            ) : (
+              <div className="flex gap-4">
+                <button 
+                  onClick={retakePhoto}
+                  className="flex-1 border border-[#141414] py-4 uppercase tracking-widest text-sm hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                >
+                  Retake
+                </button>
+                <button 
+                  onClick={analyzeCapturedPhoto}
+                  className="flex-1 bg-[#141414] text-[#E4E3E0] py-4 uppercase tracking-widest text-sm hover:opacity-80 transition-opacity"
+                >
+                  Analyze
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 bg-[#141414]/90 z-50 flex items-center justify-center p-6">
+          <div className="bg-[#E4E3E0] w-full max-w-md border border-[#141414] p-8 space-y-6">
+            <h3 className="text-2xl font-serif italic">Confirm Action</h3>
+            <p className="font-mono text-sm opacity-80">{confirmDialog.message}</p>
+            <div className="flex gap-4 pt-4">
+              <button 
+                onClick={() => setConfirmDialog(null)}
+                className="flex-1 border border-[#141414] py-3 uppercase text-[10px] font-mono tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0]"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={confirmDialog.onConfirm}
+                className="flex-1 bg-red-600 text-white py-3 uppercase text-[10px] font-mono tracking-widest hover:bg-red-700"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* View Images Modal */}
+      {viewImages && (
+        <div className="fixed inset-0 bg-[#141414]/95 z-50 flex flex-col p-6 overflow-y-auto">
+          <div className="flex justify-between items-center mb-6 text-[#E4E3E0]">
+            <h3 className="text-2xl font-serif italic">Original Document</h3>
+            <button onClick={() => setViewImages(null)} className="hover:opacity-50 p-2">
+              <Trash2 size={24} className="hidden" /> {/* Placeholder for alignment */}
+              <span className="font-mono uppercase tracking-widest text-sm border border-[#E4E3E0] px-4 py-2 hover:bg-[#E4E3E0] hover:text-[#141414] transition-colors">Close</span>
+            </button>
+          </div>
+          <div className="flex flex-col gap-8 items-center pb-12">
+            {viewImages.map((img, idx) => (
+              <div key={idx} className="w-full max-w-4xl bg-white p-2">
+                <div className="text-[#141414] font-mono text-xs uppercase tracking-widest mb-2 opacity-50">Page {idx + 1}</div>
+                <img src={img} alt={`Page ${idx + 1}`} className="w-full h-auto border border-[#141414]" />
+              </div>
+            ))}
           </div>
         </div>
       )}
