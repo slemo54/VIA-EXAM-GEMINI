@@ -240,7 +240,7 @@ export default function App() {
             analysis = await analyzeExamSheet(imageBase64, currentExam.num_questions);
           } catch (error) {
             console.error("AI analysis failed details:", error);
-            alert("AI analysis failed. Check your API key or model availability.");
+            alert("AI analysis failed. Check your API key.");
             throw error;
           }
           
@@ -521,7 +521,7 @@ export default function App() {
                         multiple 
                         accept="image/*,.jpg,.jpeg,.png,.webp,.gif,application/pdf"
                         onChange={handleFileUpload}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        className="hidden"
                         disabled={isUploading || !selectedExamId}
                       />
                       <div className={cn(
