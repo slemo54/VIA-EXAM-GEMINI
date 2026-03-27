@@ -233,63 +233,61 @@ export default function App() {
           throw error;
         }
 
-        for (const imageBase64 of images) {
-          setUploadProgress(`Analyzing page with AI...`);
-          let analysis;
-          try {
-            analysis = await analyzeExamSheet(imageBase64, currentExam.num_questions);
-          } catch (error) {
-            console.error("AI analysis failed details:", error);
-            alert("AI analysis failed. Check your API key.");
-            throw error;
-          }
-          
-          // Calculate score
-          let score = 0;
-          let totalCorrect = 0;
-          let totalWrong = 0;
-          const rawAnswers = analysis.answers || {};
-          const examAnswers: Record<string, string> = {};
-          Object.keys(rawAnswers).forEach(k => {
-            if (rawAnswers[k]) {
-              examAnswers[k] = String(rawAnswers[k]).toUpperCase().trim();
-            } else {
-              examAnswers[k] = "";
-            }
-          });
-          Object.keys(answerKey).forEach(q => {
-            if (examAnswers[q] === answerKey[q]) {
-              score += 1;
-              totalCorrect++;
-            } else if (examAnswers[q] && examAnswers[q] !== "") {
-              score -= currentExam.penalty;
-              totalWrong++;
-            }
-          });
-
-          const maxScore = currentExam.num_questions;
-          const scorePercentage = (score / maxScore) * 100;
-          const passThreshold = Number(currentExam.passing_score) || 60;
-          const isPassing = scorePercentage >= passThreshold;
-
-          const resultId = crypto.randomUUID();
-          const resultData: any = {
-            id: resultId,
-            exam_id: selectedExamId,
-            candidate_number: analysis.candidate_number || "Unknown",
-            answers: JSON.stringify(examAnswers),
-            score: parseFloat(score.toFixed(2)),
-            max_score: maxScore,
-            is_passing: isPassing,
-            confidence: analysis.confidence,
-            created_at: new Date().toISOString(),
-            total_correct: totalCorrect,
-            total_wrong: totalWrong
-          };
-
-          await db.saveResult(resultData);
-          setCurrentResult({ ...resultData, answers: examAnswers });
+        setUploadProgress(`Analyzing document with AI...`);
+        let analysis;
+        try {
+          analysis = await analyzeExamSheet(images, currentExam.num_questions);
+        } catch (error) {
+          console.error("AI analysis failed details:", error);
+          alert("AI analysis failed. Check your API key.");
+          throw error;
         }
+
+        // Calculate score
+        let score = 0;
+        let totalCorrect = 0;
+        let totalWrong = 0;
+        const rawAnswers = analysis.answers || {};
+        const examAnswers: Record<string, string> = {};
+        Object.keys(rawAnswers).forEach(k => {
+          if (rawAnswers[k]) {
+            examAnswers[k] = String(rawAnswers[k]).toUpperCase().trim();
+          } else {
+            examAnswers[k] = "";
+          }
+        });
+        Object.keys(answerKey).forEach(q => {
+          if (examAnswers[q] === answerKey[q]) {
+            score += 1;
+            totalCorrect++;
+          } else if (examAnswers[q] && examAnswers[q] !== "") {
+            score -= currentExam.penalty;
+            totalWrong++;
+          }
+        });
+
+        const maxScore = currentExam.num_questions;
+        const scorePercentage = (score / maxScore) * 100;
+        const passThreshold = Number(currentExam.passing_score) || 60;
+        const isPassing = scorePercentage >= passThreshold;
+
+        const resultId = crypto.randomUUID();
+        const resultData: any = {
+          id: resultId,
+          exam_id: selectedExamId,
+          candidate_number: analysis.candidate_number || "Unknown",
+          answers: JSON.stringify(examAnswers),
+          score: parseFloat(score.toFixed(2)),
+          max_score: maxScore,
+          is_passing: isPassing,
+          confidence: analysis.confidence,
+          created_at: new Date().toISOString(),
+          total_correct: totalCorrect,
+          total_wrong: totalWrong
+        };
+
+        await db.saveResult(resultData);
+        setCurrentResult({ ...resultData, answers: examAnswers });
       }
       
       setUploadProgressPercent(100);

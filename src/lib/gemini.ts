@@ -7,7 +7,7 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
-export const analyzeExamSheet = async (imageBase64: string, numQuestions: number = 100) => {
+export const analyzeExamSheet = async (imagesBase64: string[], numQuestions: number = 100) => {
   const model = ai.models.generateContent({
     model: "gemini-3.1-pro-preview",
     contents: [
@@ -15,17 +15,17 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
         parts: [
           {
             text: `You are an expert exam correction assistant. 
-            Analyze the provided image of a multiple-choice answer sheet.
+            Analyze the provided image(s) of a multiple-choice answer sheet.
             The sheet has ${numQuestions} questions, each with options A, B, C, D, E.
             
             Extract carefully:
-            - Scan the image thoroughly to find the bubbling area.
+            - Scan all pages thoroughly to find the bubbling areas.
             - The bubbles are usually marked with a dark fill (pencil or pen).
             - Empty circles should NOT be considered as answers.
             - Ensure you map the row number correctly to the question number.
 
             Extract:
-            1. Candidate Number (if visible, usually 6 digits).
+            1. Candidate Number (if visible, usually 6 digits). Search across all pages.
             2. For each question (1 to ${numQuestions}), identify the marked option (A, B, C, D, or E). If no option is marked or it's ambiguous, return null.
             
             CRITICAL INSTRUCTIONS FOR READING BUBBLES:
@@ -33,7 +33,7 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
             - A bubble with just an outline and white inside is NOT marked.
             - If multiple bubbles are filled for a single question, return "INVALID".
             - If no bubble is filled, return null or empty string.
-            - You MUST return an answer for every single question from 1 to ${numQuestions}. Look closely at the whole page.
+            - You MUST return an answer for every single question from 1 to ${numQuestions}. Look closely at all pages.
 
             Return ONLY a JSON object with the exact following structure:
             {
@@ -46,12 +46,12 @@ export const analyzeExamSheet = async (imageBase64: string, numQuestions: number
               "confidence": 0.95
             }`
           },
-          {
+          ...imagesBase64.map(img => ({
             inlineData: {
               mimeType: "image/png",
-              data: imageBase64.split(",")[1] || imageBase64
+              data: img.split(",")[1] || img
             }
-          }
+          }))
         ]
       }
     ],
