@@ -33,7 +33,8 @@ export const analyzeExamSheet = async (
             3. For each question, look at the 5 options (A, B, C, D, E).
             4. If an option is scribbled, blackened, or marked with an 'X', it is the selected answer. Even if the mark is faint, it counts as an answer.
             5. If all options for a question are empty (just thin outlines), SKIP that question. Do not include it.
-            6. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
+            6. If a mark is very faint, ambiguous, or if there are multiple marks and you are guessing the intended one, set \`is_unsure\` to true for that question.
+            7. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
             
             OUTPUT:
             Return a JSON object containing the candidate number (or null) and a list of ALL detected answers.`
@@ -62,7 +63,8 @@ export const analyzeExamSheet = async (
               type: Type.OBJECT,
               properties: {
                 question_number: { type: Type.NUMBER },
-                selected_option: { type: Type.STRING }
+                selected_option: { type: Type.STRING },
+                is_unsure: { type: Type.BOOLEAN, description: "True if the mark is faint, ambiguous, or if there are multiple marks." }
               },
               required: ["question_number", "selected_option"]
             }

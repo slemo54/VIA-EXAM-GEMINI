@@ -222,64 +222,99 @@ export default function App() {
           images = [await imagePromise];
         }
 
-        let allExamAnswers: Record<string, string> = {};
+        let allExamAnswers: Record<string, any> = { _unsure: [] };
         let candidateNumber = "Unknown";
         let totalConfidence = 0;
         let pagesAnalyzed = 0;
 
         for (const imageBase64 of images) {
-          setUploadProgress(`Preparing page ${pagesAnalyzed + 1} of ${images.length} for AI analysis...`);
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          setUploadProgress(`AI is scanning page ${pagesAnalyzed + 1} of ${images.length} (this may take a few seconds)...`);
-          try {
-            const analysis = await analyzeExamSheet(
-              imageBase64, 
-              currentExam.num_questions,
-              (msg) => {
-                setUploadProgress(`Page ${pagesAnalyzed + 1}/${images.length}: ${msg}`);
-              }
-            );
-            
-            setUploadProgress(`Processing answers from page ${pagesAnalyzed + 1}...`);
+          let retryCount = 0;
+          let analysisSuccess = false;
+          let analysis: any = null;
+
+          while (retryCount < 2 && !analysisSuccess) {
+            setUploadProgress(`Preparing page ${pagesAnalyzed + 1} of ${images.length} for AI analysis...${retryCount > 0 ? ` (Retry ${retryCount})` : ''}`);
             await new Promise(resolve => setTimeout(resolve, 500));
             
-            // Validate analysis result
-            if (!analysis || typeof analysis !== "object" || !analysis.detected_answers) {
-              console.error("Invalid AI analysis result:", analysis);
-              pagesAnalyzed++;
-              continue;
-            }
-
-            const numAnswersFound = Array.isArray(analysis.detected_answers) ? analysis.detected_answers.length : 0;
-            console.log(`AI found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}`);
-            setUploadProgress(`Found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}. Merging data...`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            // Clean and merge answers (ensure only short strings are stored)
-            const cleanedAnswers: Record<string, string> = {};
-            if (Array.isArray(analysis.detected_answers)) {
-              analysis.detected_answers.forEach((item: any) => {
-                if (item.question_number && item.selected_option && typeof item.selected_option === "string") {
-                  cleanedAnswers[item.question_number.toString()] = item.selected_option.trim().charAt(0).toUpperCase();
+            setUploadProgress(`AI is scanning page ${pagesAnalyzed + 1} of ${images.length} (this may take a few seconds)...`);
+            try {
+              analysis = await analyzeExamSheet(
+                imageBase64, 
+                currentExam.num_questions,
+                (msg) => {
+                  setUploadProgress(`Page ${pagesAnalyzed + 1}/${images.length}: ${msg}`);
                 }
-              });
-            }
+              );
+              
+              setUploadProgress(`Processing answers from page ${pagesAnalyzed + 1}...`);
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+              // Validate analysis result
+              if (!analysis || typeof analysis !== "object" || !analysis.detected_answers) {
+                console.error("Invalid AI analysis result:", analysis);
+                throw new Error("Invalid format");
+              }
 
-            allExamAnswers = { ...allExamAnswers, ...cleanedAnswers };
-            
-            // Use the first candidate number found or keep searching
-            if (candidateNumber === "Unknown" && analysis.candidate_number && analysis.candidate_number !== "null") {
-              candidateNumber = String(analysis.candidate_number).trim().substring(0, 20);
+              if (analysis.confidence <= 0.95 && retryCount < 1) {
+                setUploadProgress(`Confidence is low (${(analysis.confidence * 100).toFixed(1)}%). Retrying automatically...`);
+                retryCount++;
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                continue;
+              }
+
+              analysisSuccess = true;
+            } catch (pageError) {
+              console.error(`Error analyzing page ${pagesAnalyzed + 1}:`, pageError);
+              if (retryCount < 1) {
+                setUploadProgress(`Warning: Failed to analyze page ${pagesAnalyzed + 1}. Retrying...`);
+                retryCount++;
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              } else {
+                setUploadProgress(`Warning: Failed to analyze page ${pagesAnalyzed + 1} after retries. Continuing...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                break;
+              }
             }
-            
-            totalConfidence += (Number(analysis.confidence) || 0.5);
-          } catch (pageError) {
-            console.error(`Error analyzing page ${pagesAnalyzed + 1}:`, pageError);
-            setUploadProgress(`Warning: Failed to analyze page ${pagesAnalyzed + 1}. Continuing...`);
-            // Wait a moment so the user can see the warning
-            await new Promise(resolve => setTimeout(resolve, 2000));
           }
+
+          if (!analysisSuccess) {
+            pagesAnalyzed++;
+            continue;
+          }
+
+          const numAnswersFound = Array.isArray(analysis.detected_answers) ? analysis.detected_answers.length : 0;
+          console.log(`AI found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}`);
+          setUploadProgress(`Found ${numAnswersFound} answers on page ${pagesAnalyzed + 1}. Merging data...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Clean and merge answers (ensure only short strings are stored)
+          const cleanedAnswers: Record<string, any> = {};
+          const unsureList: string[] = [];
+          
+          if (Array.isArray(analysis.detected_answers)) {
+            analysis.detected_answers.forEach((item: any) => {
+              if (item.question_number && item.selected_option && typeof item.selected_option === "string") {
+                const qNum = item.question_number.toString();
+                cleanedAnswers[qNum] = item.selected_option.trim().charAt(0).toUpperCase();
+                if (item.is_unsure) {
+                  unsureList.push(qNum);
+                }
+              }
+            });
+          }
+
+          allExamAnswers = { 
+            ...allExamAnswers, 
+            ...cleanedAnswers,
+            _unsure: [...(allExamAnswers._unsure || []), ...unsureList]
+          };
+          
+          // Use the first candidate number found or keep searching
+          if (candidateNumber === "Unknown" && analysis.candidate_number && analysis.candidate_number !== "null") {
+            candidateNumber = String(analysis.candidate_number).trim().substring(0, 20);
+          }
+          
+          totalConfidence += (Number(analysis.confidence) || 0.5);
           pagesAnalyzed++;
         }
 
@@ -477,6 +512,7 @@ export default function App() {
   const correctCount = currentResult ? Object.keys(answerKey).filter(q => currentResult.answers[q] === answerKey[q]).length : 0;
   const unansweredCount = currentResult ? Object.keys(answerKey).filter(q => !currentResult.answers[q]).length : 0;
   const incorrectCount = totalQuestions - correctCount - unansweredCount;
+  const unsureCount = currentResult?.answers?._unsure?.length || 0;
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
@@ -898,7 +934,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4 mb-12">
+                <div className={cn("grid gap-4 mb-12", unsureCount > 0 ? "grid-cols-2 md:grid-cols-4" : "grid-cols-3")}>
                   <div className="border border-green-600/30 bg-green-600/5 p-6 flex flex-col items-center justify-center">
                     <span className="text-[10px] uppercase font-mono tracking-widest text-green-700 opacity-70">Correct</span>
                     <span className="text-4xl font-serif italic text-green-700">{correctCount}</span>
@@ -911,20 +947,53 @@ export default function App() {
                     <span className="text-[10px] uppercase font-mono tracking-widest text-amber-700 opacity-70">Unanswered</span>
                     <span className="text-4xl font-serif italic text-amber-700">{unansweredCount}</span>
                   </div>
+                  {unsureCount > 0 && (
+                    <div className="border border-purple-600/30 bg-purple-600/5 p-6 flex flex-col items-center justify-center relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-purple-600 animate-pulse" />
+                      <span className="text-[10px] uppercase font-mono tracking-widest text-purple-700 opacity-70">Unsure (Review)</span>
+                      <span className="text-4xl font-serif italic text-purple-700">{unsureCount}</span>
+                    </div>
+                  )}
                 </div>
+
+                {unsureCount > 0 && (
+                  <div className="mb-12 border border-purple-600/30 bg-purple-600/5 p-6">
+                    <h3 className="text-xl font-serif italic text-purple-800 mb-4 flex items-center gap-2">
+                      <AlertCircle size={20} />
+                      Requires Examiner Attention
+                    </h3>
+                    <p className="text-sm text-purple-800/70 mb-4">
+                      The AI was unsure about the following questions due to faint marks, multiple marks, or ambiguity. Please verify them manually.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {currentResult.answers._unsure.map((q: string) => (
+                        <span key={q} className="px-3 py-1 bg-purple-600 text-white text-xs font-mono font-bold rounded-full">
+                          Q{q}: {currentResult.answers[q] || "Empty"}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   {Object.keys(answerKey).sort((a, b) => parseInt(a) - parseInt(b)).map(q => {
                     const studentAns = currentResult.answers[q];
                     const correctAns = answerKey[q];
                     const isCorrect = studentAns === correctAns;
+                    const isUnsure = currentResult.answers?._unsure?.includes(q);
 
                     return (
                       <div key={q} className={cn(
-                        "border p-4 flex flex-col gap-2 transition-all",
+                        "border p-4 flex flex-col gap-2 transition-all relative",
                         isCorrect ? "border-green-600/30 bg-green-600/5" : 
-                        !studentAns ? "border-amber-600/30 bg-amber-600/5" : "border-red-600/30 bg-red-600/5"
+                        !studentAns ? "border-amber-600/30 bg-amber-600/5" : "border-red-600/30 bg-red-600/5",
+                        isUnsure && "ring-2 ring-purple-500 shadow-[0_0_15px_rgba(168,85,247,0.4)]"
                       )}>
+                        {isUnsure && (
+                          <div className="absolute -top-2 -right-2 bg-purple-600 text-white text-[8px] uppercase font-bold px-2 py-1 rounded-full animate-pulse">
+                            Review
+                          </div>
+                        )}
                         <div className="flex justify-between items-center border-b border-[#141414]/10 pb-2">
                           <span className="text-xs font-mono font-bold uppercase">Question {q}</span>
                           {isCorrect ? (
