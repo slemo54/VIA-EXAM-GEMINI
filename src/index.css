@@ -5,10 +5,27 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-serif: "Playfair Display", serif;
+  --color-base: var(--bg);
+  --color-ink: var(--fg);
+  --color-card: var(--card);
 }
 
 @layer base {
+  :root {
+    --bg: #E4E3E0;
+    --fg: #141414;
+    --card: #ffffff;
+    --shadow: rgba(20,20,20,1);
+  }
+  
+  .dark {
+    --bg: #141414;
+    --fg: #E4E3E0;
+    --card: #1a1a1a;
+    --shadow: rgba(228,227,224,1);
+  }
+  
   body {
-    @apply antialiased;
+    @apply antialiased bg-base text-ink;
   }
 }

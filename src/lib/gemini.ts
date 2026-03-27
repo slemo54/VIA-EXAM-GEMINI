@@ -34,7 +34,7 @@ export const analyzeExamSheet = async (
             4. For each question, look at the 5 options (A, B, C, D, E).
             5. If an option is scribbled, blackened, or marked with an 'X', it is the selected answer. Even if the mark is faint, it counts as an answer.
             6. If all options for a question are empty (just thin outlines), SKIP that question. Do not include it.
-            7. If a mark is very faint, ambiguous, or if there are multiple marks and you are guessing the intended one, set \`is_unsure\` to true for that question.
+            7. CRITICAL FOR AMBIGUOUS MARKS: If a mark is placed IN BETWEEN two bubbles, is just a stray smudge, or crosses multiple options, you MUST set \`is_unsure\` to true. DO NOT TRY TO GUESS the intended answer. If you are not 100% sure which specific bubble the candidate intended to select, mark it as unsure.
             8. Double-check your work before returning the result. Did you miss any questions in the middle of a column? Did you miss the last column?
             
             OUTPUT:
@@ -50,7 +50,7 @@ export const analyzeExamSheet = async (
       }
     ],
     config: {
-      systemInstruction: "You are a precise OCR engine for exam sheets. You output ONLY valid, compact JSON. You never add extra spaces, explanations, or conversational filler. You distinguish between empty circles and filled bubbles with high accuracy.",
+      systemInstruction: "You are a precise OCR engine for exam sheets. You output ONLY valid, compact JSON. You never add extra spaces, explanations, or conversational filler. You distinguish between empty circles and filled bubbles with high accuracy. You are extremely strict about ambiguous marks: if a mark is between bubbles, crosses multiple options, or is a stray smudge, you MUST flag it as unsure.",
       responseMimeType: "application/json",
       maxOutputTokens: 8192,
       responseSchema: {
@@ -66,7 +66,7 @@ export const analyzeExamSheet = async (
               properties: {
                 question_number: { type: Type.NUMBER },
                 selected_option: { type: Type.STRING },
-                is_unsure: { type: Type.BOOLEAN, description: "True if the mark is faint, ambiguous, or if there are multiple marks." }
+                is_unsure: { type: Type.BOOLEAN, description: "MUST be true if the mark is faint, ambiguous, between two bubbles, crosses multiple options, or is a stray smudge. DO NOT GUESS." }
               },
               required: ["question_number", "selected_option"]
             }

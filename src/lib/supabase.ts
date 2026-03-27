@@ -13,6 +13,50 @@ export const isSupabaseConfigured = !!supabase;
 const getLocal = (key: string) => JSON.parse(localStorage.getItem(key) || '[]');
 const setLocal = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
 
+export async function getCandidates() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('candidates')
+      .select('*')
+      .order('surname', { ascending: true });
+    if (error) throw error;
+    return data;
+  } else {
+    return getLocal('candidates');
+  }
+}
+
+export async function saveCandidates(candidates: any[]) {
+  if (supabase) {
+    const { error } = await supabase.from('candidates').upsert(candidates);
+    if (error) throw error;
+  } else {
+    const existing = getLocal('candidates');
+    const newMap = new Map(existing.map((c: any) => [c.candidate_id, c]));
+    candidates.forEach(c => newMap.set(c.candidate_id, c));
+    setLocal('candidates', Array.from(newMap.values()));
+  }
+}
+
+export async function deleteCandidate(candidateId: string) {
+  if (supabase) {
+    const { error } = await supabase.from('candidates').delete().eq('candidate_id', candidateId);
+    if (error) throw error;
+  } else {
+    const candidates = getLocal('candidates').filter((c: any) => c.candidate_id !== candidateId);
+    setLocal('candidates', candidates);
+  }
+}
+
+export async function clearCandidates() {
+  if (supabase) {
+    const { error } = await supabase.from('candidates').delete().neq('candidate_id', '0');
+    if (error) throw error;
+  } else {
+    setLocal('candidates', []);
+  }
+}
+
 export async function getExams() {
   if (supabase) {
     const { data, error } = await supabase
