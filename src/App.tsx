@@ -4,6 +4,7 @@ import {
   FileText, 
   CheckCircle, 
   AlertCircle, 
+  AlertTriangle,
   History, 
   Settings, 
   Loader2, 
@@ -21,6 +22,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { pdfToImages } from "./lib/pdf";
+import { processExamCanvasImage } from "./lib/imageProcessor";
 import { analyzeExamSheet } from "./lib/gemini";
 import * as db from "./lib/supabase";
 import { Database, CloudOff } from "lucide-react";
@@ -37,6 +39,7 @@ interface Exam {
   num_questions: number;
   passing_score: number;
   penalty: number;
+  confidence_threshold?: number;
   answer_key: string; // JSON string
   created_at: string;
 }
@@ -66,6 +69,12 @@ export default function App() {
   const [answerKey, setAnswerKey] = useState<Record<string, string>>({});
   const [newExamName, setNewExamName] = useState("");
   const [csvPreview, setCsvPreview] = useState<Record<string, string> | null>(null);
+  const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  
+  // Manual Candidate Form State
+  const [newCandidateName, setNewCandidateName] = useState("");
+  const [newCandidateSurname, setNewCandidateSurname] = useState("");
+  const [newCandidateId, setNewCandidateId] = useState("");
   const [showCamera, setShowCamera] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [apiKeySet, setApiKeySet] = useState(false);
@@ -192,6 +201,7 @@ export default function App() {
           num_questions: 100,
           passing_score: 60,
           penalty: 0,
+          confidence_threshold: 0.95,
           answer_key: JSON.stringify(defaultKey),
           created_at: new Date().toISOString()
         };
@@ -238,8 +248,33 @@ export default function App() {
           await db.deleteResultData(id);
           fetchResults(selectedExamId);
           await idbDel(`images_${id}`);
+          setSelectedResults(prev => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         } catch (err) {
           console.error("Failed to delete result", err);
+        }
+        setConfirmDialog(null);
+      }
+    });
+  };
+
+  const deleteSelectedResults = async () => {
+    if (selectedResults.size === 0) return;
+    setConfirmDialog({
+      message: `Are you sure you want to delete ${selectedResults.size} selected results?`,
+      onConfirm: async () => {
+        try {
+          for (const id of selectedResults) {
+            await db.deleteResultData(id);
+            await idbDel(`images_${id}`);
+          }
+          fetchResults(selectedExamId);
+          setSelectedResults(new Set());
+        } catch (err) {
+          console.error("Failed to delete selected results", err);
         }
         setConfirmDialog(null);
       }
@@ -362,7 +397,35 @@ export default function App() {
             reader.onload = (e) => resolve(e.target?.result as string);
           });
           reader.readAsDataURL(file);
-          images = [await imagePromise];
+          const base64 = await imagePromise;
+          
+          try {
+            const img = new Image();
+            img.src = base64;
+            await new Promise((resolve, reject) => { 
+              img.onload = resolve; 
+              img.onerror = reject;
+            });
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0);
+              const processedBlob = await processExamCanvasImage(canvas, { useAdaptiveThresholding: true });
+              const processedBase64 = await new Promise<string>((resolve) => {
+                const reader2 = new FileReader();
+                reader2.onloadend = () => resolve(reader2.result as string);
+                reader2.readAsDataURL(processedBlob);
+              });
+              images = [processedBase64];
+            } else {
+              images = [base64];
+            }
+          } catch (e) {
+            console.error("Failed to process image, using original", e);
+            images = [base64];
+          }
         }
 
         let currentCandidateAnswers: Record<string, any> = { _unsure: [] };
@@ -423,7 +486,9 @@ export default function App() {
         };
 
         const checkConfidenceAndPrompt = async (resultData: any) => {
-          if (resultData && resultData.confidence < 0.95) {
+          const currentExam = exams.find(e => e.id === selectedExamId);
+          const threshold = currentExam?.confidence_threshold ?? 0.95;
+          if (resultData && resultData.confidence < threshold) {
             const action = await showPrompt(
               "Low Confidence Detected",
               `Confidence for Candidate #${resultData.candidate_number} is low (${(resultData.confidence * 100).toFixed(1)}%). What would you like to do?`,
@@ -475,7 +540,8 @@ export default function App() {
                 throw new Error("Invalid format");
               }
 
-              if (analysis.confidence <= 0.95 && retryCount < 1) {
+              const threshold = currentExam?.confidence_threshold ?? 0.95;
+              if (analysis.confidence <= threshold && retryCount < 1) {
                 setUploadProgress(`Confidence is low (${(analysis.confidence * 100).toFixed(1)}%). Retrying automatically...`);
                 retryCount++;
                 await new Promise(resolve => setTimeout(resolve, 1500));
@@ -511,16 +577,25 @@ export default function App() {
             ? String(analysis.candidate_id).trim().substring(0, 20)
             : null;
 
-          if ((detectedCandidateNumber || detectedCandidateId) && currentPagesAnalyzed > 0) {
-            setUploadProgress(`New candidate detected. Saving previous exam...`);
+          // Check for overlap to detect a new exam even without a candidate number
+          let hasOverlap = false;
+          if (Array.isArray(analysis.detected_answers) && currentPagesAnalyzed > 0) {
+            for (const item of analysis.detected_answers) {
+              if (item.question_number && currentCandidateAnswers[item.question_number.toString()]) {
+                hasOverlap = true;
+                break;
+              }
+            }
+          }
+
+          if (((detectedCandidateNumber || detectedCandidateId) || hasOverlap) && currentPagesAnalyzed > 0) {
+            setUploadProgress(`New exam detected. Saving previous exam...`);
             await saveCurrentResult();
             
             if (lastResultData) {
               const action = await checkConfidenceAndPrompt(lastResultData);
               if (action === "review") {
                 // We don't break the loop, but we might want to let the user review later.
-                // Actually, if they choose review, we set the tab to detail. The loop will continue.
-                // If they choose rescan, it's deleted.
               }
             }
             
@@ -704,6 +779,28 @@ export default function App() {
     e.target.value = ''; // Reset input
   };
 
+  const handleAddCandidate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCandidateName.trim() || !newCandidateSurname.trim() || !newCandidateId.trim()) {
+      alert("Please fill in all fields.");
+      return;
+    }
+    try {
+      await db.saveCandidates([{
+        name: newCandidateName.trim(),
+        surname: newCandidateSurname.trim(),
+        candidate_id: newCandidateId.trim()
+      }]);
+      setNewCandidateName("");
+      setNewCandidateSurname("");
+      setNewCandidateId("");
+      fetchCandidates();
+    } catch (err) {
+      console.error("Failed to add candidate", err);
+      alert("Failed to add candidate.");
+    }
+  };
+
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -793,7 +890,12 @@ export default function App() {
       const search = filterCandidate.toLowerCase();
       const matchNumber = r.candidate_number.toLowerCase().includes(search);
       const matchId = r.candidate_id ? r.candidate_id.toLowerCase().includes(search) : false;
-      if (!matchNumber && !matchId) return false;
+      
+      const matchedCandidate = candidates.find(c => c.candidate_id === r.candidate_number || c.candidate_id === r.candidate_id);
+      const matchName = matchedCandidate ? matchedCandidate.name.toLowerCase().includes(search) : false;
+      const matchSurname = matchedCandidate ? matchedCandidate.surname.toLowerCase().includes(search) : false;
+      
+      if (!matchNumber && !matchId && !matchName && !matchSurname) return false;
     }
     if (filterScoreMin && r.score < parseFloat(filterScoreMin)) return false;
     if (filterScoreMax && r.score > parseFloat(filterScoreMax)) return false;
@@ -1057,12 +1159,22 @@ export default function App() {
               >
                 <div className="flex justify-between items-end mb-12">
                   <h2 className="text-4xl sm:text-5xl font-serif italic">History</h2>
-                  <button 
-                    onClick={exportCSV}
-                    className="text-xs font-mono uppercase border-b border-ink pb-1 hover:opacity-50"
-                  >
-                    Export CSV
-                  </button>
+                  <div className="flex gap-4">
+                    {selectedResults.size > 0 && (
+                      <button 
+                        onClick={deleteSelectedResults}
+                        className="text-xs font-mono uppercase border-b border-red-600 text-red-600 pb-1 hover:opacity-50"
+                      >
+                        Delete Selected ({selectedResults.size})
+                      </button>
+                    )}
+                    <button 
+                      onClick={exportCSV}
+                      className="text-xs font-mono uppercase border-b border-ink pb-1 hover:opacity-50"
+                    >
+                      Export CSV
+                    </button>
+                  </div>
                 </div>
 
                 {/* Statistics Cards */}
@@ -1160,7 +1272,19 @@ export default function App() {
                 </div>
 
                 <div className="border border-ink">
-                  <div className="hidden md:grid grid-cols-5 bg-ink text-base p-4 text-[10px] uppercase tracking-widest font-mono">
+                  <div className="hidden md:grid grid-cols-[auto_1fr_1fr_1fr_1fr_auto] gap-4 bg-ink text-base p-4 text-[10px] uppercase tracking-widest font-mono items-center">
+                    <input 
+                      type="checkbox" 
+                      className="cursor-pointer"
+                      checked={filteredResults.length > 0 && selectedResults.size === filteredResults.length}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedResults(new Set(filteredResults.map(r => r.id)));
+                        } else {
+                          setSelectedResults(new Set());
+                        }
+                      }}
+                    />
                     <span>Date</span>
                     <span>Candidate</span>
                     <span>Score</span>
@@ -1171,10 +1295,41 @@ export default function App() {
                     {filteredResults.length === 0 ? (
                       <div className="p-12 text-center opacity-50 uppercase text-xs tracking-widest">No results found matching filters</div>
                     ) : (
-                      filteredResults.map(res => (
-                        <div key={res.id} className="grid grid-cols-1 md:grid-cols-5 p-4 items-center gap-4 md:gap-0 hover:bg-ink/5 transition-colors">
+                      filteredResults.map(res => {
+                        const currentExam = exams.find(e => e.id === selectedExamId);
+                        const threshold = currentExam?.confidence_threshold ?? 0.95;
+                        const isLowConfidence = res.confidence < threshold;
+                        
+                        return (
+                        <div key={res.id} className="grid grid-cols-1 md:grid-cols-[auto_1fr_1fr_1fr_1fr_auto] p-4 items-center gap-4 md:gap-4 hover:bg-ink/5 transition-colors">
+                          <div className="hidden md:block">
+                            <input 
+                              type="checkbox" 
+                              className="cursor-pointer"
+                              checked={selectedResults.has(res.id)}
+                              onChange={(e) => {
+                                const next = new Set(selectedResults);
+                                if (e.target.checked) next.add(res.id);
+                                else next.delete(res.id);
+                                setSelectedResults(next);
+                              }}
+                            />
+                          </div>
                           <div className="flex justify-between md:block">
-                            <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Date</span>
+                            <div className="flex items-center gap-2">
+                              <input 
+                                type="checkbox" 
+                                className="md:hidden cursor-pointer"
+                                checked={selectedResults.has(res.id)}
+                                onChange={(e) => {
+                                  const next = new Set(selectedResults);
+                                  if (e.target.checked) next.add(res.id);
+                                  else next.delete(res.id);
+                                  setSelectedResults(next);
+                                }}
+                              />
+                              <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Date</span>
+                            </div>
                             <span className="text-xs font-mono">{new Date(res.created_at).toLocaleDateString()}</span>
                           </div>
                           <div className="flex justify-between md:block items-center">
@@ -1199,7 +1354,10 @@ export default function App() {
                           </div>
                           <div className="flex justify-between md:block items-center">
                             <span className="md:hidden text-[10px] uppercase opacity-50 font-mono">Confidence</span>
-                            <span className="text-xs font-mono">{res.confidence ? (res.confidence * 100).toFixed(0) + "%" : "N/A"}</span>
+                            <span className={cn("text-xs font-mono flex items-center gap-1", isLowConfidence ? "text-red-600" : "")}>
+                              {isLowConfidence && <AlertTriangle size={14} />}
+                              {res.confidence ? (res.confidence * 100).toFixed(0) + "%" : "N/A"}
+                            </span>
                           </div>
                           <div className="flex justify-end gap-4 mt-2 md:mt-0 pt-2 md:pt-0 border-t border-ink/10 md:border-0">
                             <button className="hover:opacity-50 flex items-center gap-2 text-xs uppercase font-mono" onClick={() => {
@@ -1213,7 +1371,8 @@ export default function App() {
                             <button className="hover:text-red-600 flex items-center gap-2 text-xs uppercase font-mono" onClick={() => deleteResult(res.id)}><Trash2 size={16} /> <span className="md:hidden">Delete</span></button>
                           </div>
                         </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -1296,15 +1455,28 @@ export default function App() {
                           />
                         </div>
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase font-mono opacity-50">Wrong Answer Penalty (e.g. -0.25)</label>
-                        <input 
-                          type="number"
-                          step="0.05"
-                          value={exams.find(e => e.id === selectedExamId)?.penalty || 0}
-                          onChange={(e) => updateExamSettings({ penalty: parseFloat(e.target.value) || 0 })}
-                          className="w-full bg-transparent border border-ink p-3 text-sm focus:outline-none"
-                        />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] uppercase font-mono opacity-50">Wrong Answer Penalty (e.g. -0.25)</label>
+                          <input 
+                            type="number"
+                            step="0.05"
+                            value={exams.find(e => e.id === selectedExamId)?.penalty || 0}
+                            onChange={(e) => updateExamSettings({ penalty: parseFloat(e.target.value) || 0 })}
+                            className="w-full bg-transparent border border-ink p-3 text-sm focus:outline-none"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] uppercase font-mono opacity-50">Confidence Threshold (%)</label>
+                          <input 
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={Math.round((exams.find(e => e.id === selectedExamId)?.confidence_threshold ?? 0.95) * 100)}
+                            onChange={(e) => updateExamSettings({ confidence_threshold: (parseInt(e.target.value) || 95) / 100 })}
+                            className="w-full bg-transparent border border-ink p-3 text-sm focus:outline-none"
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -1578,6 +1750,51 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="border border-ink bg-card p-6 shadow-[4px_4px_0px_0px_var(--shadow)]">
+                  <h3 className="text-xl font-serif italic mb-4">Add Candidate Manually</h3>
+                  <form onSubmit={handleAddCandidate} className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase font-mono opacity-50">Candidate ID</label>
+                      <input 
+                        type="text"
+                        value={newCandidateId}
+                        onChange={e => setNewCandidateId(e.target.value)}
+                        placeholder="e.g. 12345"
+                        className="w-full bg-transparent border border-ink p-2 text-sm focus:outline-none"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase font-mono opacity-50">Name</label>
+                      <input 
+                        type="text"
+                        value={newCandidateName}
+                        onChange={e => setNewCandidateName(e.target.value)}
+                        placeholder="First Name"
+                        className="w-full bg-transparent border border-ink p-2 text-sm focus:outline-none"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase font-mono opacity-50">Surname</label>
+                      <input 
+                        type="text"
+                        value={newCandidateSurname}
+                        onChange={e => setNewCandidateSurname(e.target.value)}
+                        placeholder="Last Name"
+                        className="w-full bg-transparent border border-ink p-2 text-sm focus:outline-none"
+                        required
+                      />
+                    </div>
+                    <button 
+                      type="submit"
+                      className="bg-ink text-base px-4 py-2 uppercase text-[10px] font-mono tracking-widest hover:opacity-80 transition-opacity h-[38px]"
+                    >
+                      Add
+                    </button>
+                  </form>
+                </div>
+
                 <div className="border border-ink bg-card overflow-hidden shadow-[4px_4px_0px_0px_var(--shadow)]">
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
@@ -1603,6 +1820,16 @@ export default function App() {
                               <td className="p-4 font-serif">{c.surname}</td>
                               <td className="p-4 font-serif">{c.name}</td>
                               <td className="p-4 text-right">
+                                <button
+                                  onClick={() => {
+                                    setFilterCandidate(c.candidate_id);
+                                    setActiveTab("history");
+                                  }}
+                                  className="text-ink hover:opacity-50 transition-opacity mr-4"
+                                  title="View History"
+                                >
+                                  <History size={16} />
+                                </button>
                                 <button 
                                   onClick={async () => {
                                     if (confirm("Delete this candidate?")) {
@@ -1835,6 +2062,24 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Floating Upload Progress */}
+      <AnimatePresence>
+        {isUploading && activeTab !== "correct" && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-20 right-6 bg-ink text-base p-4 shadow-2xl z-40 flex items-center gap-4 border border-base max-w-sm"
+          >
+            <Loader2 className="animate-spin shrink-0" size={24} />
+            <div className="flex flex-col overflow-hidden">
+              <span className="text-[10px] font-mono uppercase tracking-widest opacity-70">Background Task</span>
+              <span className="text-sm font-serif italic truncate">{uploadProgress}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Footer */}
       <footer className="border-t border-ink p-4 flex justify-between items-center text-[10px] uppercase tracking-[0.2em] font-mono">

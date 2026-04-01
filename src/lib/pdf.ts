@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { processExamCanvasImage } from './imageProcessor';
 
 // Set worker path (using local file via Vite)
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -21,7 +22,18 @@ export const pdfToImages = async (file: File): Promise<string[]> => {
     canvas.width = viewport.width;
     
     await page.render({ canvasContext: context, viewport, canvas }).promise;
-    images.push(canvas.toDataURL('image/jpeg', 0.95)); // Higher quality to preserve bubble details
+    
+    // Process the image using the new pipeline (Contrast + Adaptive Thresholding)
+    const processedBlob = await processExamCanvasImage(canvas, { useAdaptiveThresholding: true });
+    
+    // Convert Blob back to base64 Data URL for the rest of the app
+    const base64Url = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(processedBlob);
+    });
+    
+    images.push(base64Url);
   }
 
   return images;

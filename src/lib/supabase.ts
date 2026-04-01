@@ -19,7 +19,13 @@ export async function getCandidates() {
       .from('candidates')
       .select('*')
       .order('surname', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST205') {
+        console.warn("Candidates table not found in Supabase. Falling back to localStorage.");
+        return getLocal('candidates');
+      }
+      throw error;
+    }
     return data;
   } else {
     return getLocal('candidates');
@@ -29,7 +35,17 @@ export async function getCandidates() {
 export async function saveCandidates(candidates: any[]) {
   if (supabase) {
     const { error } = await supabase.from('candidates').upsert(candidates);
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST205') {
+        console.warn("Candidates table not found in Supabase. Falling back to localStorage.");
+        const existing = getLocal('candidates');
+        const newMap = new Map(existing.map((c: any) => [c.candidate_id, c]));
+        candidates.forEach(c => newMap.set(c.candidate_id, c));
+        setLocal('candidates', Array.from(newMap.values()));
+        return;
+      }
+      throw error;
+    }
   } else {
     const existing = getLocal('candidates');
     const newMap = new Map(existing.map((c: any) => [c.candidate_id, c]));
@@ -41,7 +57,14 @@ export async function saveCandidates(candidates: any[]) {
 export async function deleteCandidate(candidateId: string) {
   if (supabase) {
     const { error } = await supabase.from('candidates').delete().eq('candidate_id', candidateId);
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST205') {
+        const candidates = getLocal('candidates').filter((c: any) => c.candidate_id !== candidateId);
+        setLocal('candidates', candidates);
+        return;
+      }
+      throw error;
+    }
   } else {
     const candidates = getLocal('candidates').filter((c: any) => c.candidate_id !== candidateId);
     setLocal('candidates', candidates);
@@ -51,7 +74,13 @@ export async function deleteCandidate(candidateId: string) {
 export async function clearCandidates() {
   if (supabase) {
     const { error } = await supabase.from('candidates').delete().neq('candidate_id', '0');
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST205') {
+        setLocal('candidates', []);
+        return;
+      }
+      throw error;
+    }
   } else {
     setLocal('candidates', []);
   }
@@ -107,7 +136,22 @@ export async function saveExam(exam: any) {
         passing_threshold: passing_score
       });
     
-    if (examError) throw examError;
+    if (examError) {
+      if (examError.code === 'PGRST204' || examError.code === 'PGRST205' || examError.code === '42703' || examError.message.includes('column')) {
+        console.warn("Some columns might be missing in the exams table. Falling back to basic schema.", examError);
+        const { confidence_threshold, ...basicExamData } = examData;
+        const { error: fallbackError } = await supabase
+          .from('exams')
+          .upsert({
+            ...basicExamData,
+            question_count: num_questions,
+            passing_threshold: passing_score
+          });
+        if (fallbackError) throw fallbackError;
+      } else {
+        throw examError;
+      }
+    }
 
     // Save answer keys
     const parsedKey = JSON.parse(answer_key);
@@ -216,7 +260,23 @@ export async function saveResult(result: any) {
         total_wrong: total_wrong || 0
       });
     
-    if (error) throw error;
+    if (error) {
+      // If the error is about missing columns (e.g., confidence, max_score), try without them
+      if (error.code === 'PGRST204' || error.code === 'PGRST205' || error.code === '42703' || error.message.includes('column')) {
+        console.warn("Some columns might be missing in the results table. Falling back to basic schema.", error);
+        const { error: fallbackError } = await supabase
+          .from('results')
+          .upsert({
+            ...resultData,
+            answers_json: JSON.stringify(parsedAnswers),
+            pass_fail: is_passing,
+            total_answered: totalAnswered
+          });
+        if (fallbackError) throw fallbackError;
+      } else {
+        throw error;
+      }
+    }
   } else {
     const results = getLocal('results');
     results.push(result);
